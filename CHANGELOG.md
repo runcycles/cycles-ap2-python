@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-13
+
+### Added
+- `AsyncGuardedPayment` and `cycles_guard_payment_async(...)` — async-context-manager variant for asyncio runtimes (FastAPI, anyio, OpenAI async SDK, etc.). Same exception classes as sync plus one async-only condition (cancellation mid-commit, see below). Same idempotency-key derivation (including the open-mandate consume-once scope) and same commit-uncertainty handling as the sync `GuardedPayment`.
+- New example `examples/ap2_human_not_present_async.py`.
+- README "Async variant (v0.2+)" quickstart snippet.
+- 37 tests in `tests/test_async_guard.py` mirroring the sync test surface (clean commit, dry-run, denial, release on exception, commit-uncertain branches incl. cancellation, commit-failed branches incl. release-failure recording, AP2 sample-type adapter end-to-end). Total 147 tests, 99.20% coverage. ruff + mypy strict.
+
+### Changed (async-only)
+- `AP2GuardCommitUncertain` gains one new `error_code` value, `"COMMIT_CANCELLED"`, raised when an `asyncio.CancelledError` lands while the async commit POST is in flight. The exception class itself is unchanged; only the set of `error_code` discriminators grew. Sync callers see no change.
+
+### Unchanged
+- No wire-shape changes. No validation changes. No sync API changes — existing v0.1.x sync callers see the API entirely unchanged.
+
+### Still planned for v0.3
+- Multi-currency.
+- `payment.refund` helper.
+- Server-verifiable runtime-authority receipt (requires `cycles-protocol` signed-receipt field).
+
 ## [0.1.0] — 2026-05-13
 
 ### Added
@@ -14,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deterministic idempotency keys with automatic consume-once scope selection — `ap2:open_mandate:{sha256(open_mandate_hash)[:32]}:{phase}` when the mandate carries an open mandate hash (AP2 spec §6 normative consume-once defense for human-not-present flows), `ap2:tx:{sha256(transaction_id)[:32]}:{phase}` otherwise. Hash is fixed-length (128-bit collision resistance), header-safe, and the phase suffix is always preserved.
 - `AP2DryRunResult` exception — raised from `__enter__` when `dry_run=True` so the `with` body cannot execute (prevents real PSP calls under dry-run from moving money off the books).
 - `AP2GuardCommitFailed` exception — raised after a release attempt when the server rejects a commit with an unrecognized code; carries `released: bool` and `release_error: str | None` so the caller can distinguish "budget recovered" from "budget stranded until TTL".
-- `AP2GuardCommitUncertain` exception — raised whenever the commit outcome is unknown after the PSP body ran: terminal codes (`RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH`), transport-level failures (`error_code="TRANSPORT_ERROR"`), 5xx server errors (`SERVER_ERROR` or specific code), and uncaught exceptions during commit (`COMMIT_RAISED`, original chained via `__cause__`). No auto-release in any of these cases — the POST may have mutated Cycles before the failure.
+- `AP2GuardCommitUncertain` exception — raised whenever the commit outcome is unknown after the PSP body ran: terminal codes (`RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH`), transport-level failures (`error_code="TRANSPORT_ERROR"`), 5xx server errors (`SERVER_ERROR` or specific code), uncaught exceptions during commit (`COMMIT_RAISED`, original chained via `__cause__`), and — async only — `asyncio.CancelledError` mid-flight (`COMMIT_CANCELLED`, original chained via `__cause__`). No auto-release in any of these cases — the POST may have mutated Cycles before the failure.
 - USD-only enforcement; non-USD raises `AP2CurrencyError`. Rejects NaN, +/-Infinity, and amounts with more than 8 decimal places (sub-micro precision); wraps all `decimal` failures as `AP2MandateError`.
 - Exact integer-tuple conversion in `amount_micros()` — does not depend on the default decimal context, so large valid inputs convert exactly instead of being silently rounded.
 - Pre-allocation digit-count cap (≤ 19 integer digits, the int64 USD_MICROCENTS ceiling) blocks exponent-notation DoS like `Decimal("1E+1000000000000")` that would otherwise hang allocating a trillion-digit scaling factor.
@@ -26,10 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AP2Mandate.from_ap2()` preserves an empty upstream `checkout_hash` so the model's `min_length=1` constraint can reject it (was previously masked to `None` by a falsy-`or` short-circuit).
 - 110 tests, ≥ 95% coverage, ruff + mypy strict.
 
-### Planned for v0.2
-- `AsyncGuardedPayment` (asyncio).
+### Planned for v0.3
 - Multi-currency.
 - `payment.refund` helper.
-
-### Planned for v0.3
 - Server-verifiable runtime-authority receipt (requires `cycles-protocol` signed-receipt field).

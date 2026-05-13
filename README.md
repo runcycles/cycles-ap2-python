@@ -80,6 +80,26 @@ with CyclesClient(config) as client:
     print(guard.receipt)  # client-side runtime-authority receipt
 ```
 
+### Async variant (v0.2+)
+
+Same contract, asyncio I/O. Use this when your agent runtime is async (FastAPI, anyio, the OpenAI async SDK, etc.):
+
+```python
+from runcycles import AsyncCyclesClient, CyclesConfig
+from runcycles_ap2 import AP2Mandate, cycles_guard_payment_async
+
+async def charge(mandate: AP2Mandate) -> None:
+    config = CyclesConfig.from_env()
+    async with AsyncCyclesClient(config) as client:
+        async with cycles_guard_payment_async(
+            client, mandate=mandate, run_id="run_abc123", tenant="acme",
+        ) as guard:
+            psp_receipt = await psp.charge_async(mandate)
+            guard.attach_receipt_fields(psp_ref=psp_receipt.id)
+```
+
+`AsyncGuardedPayment` raises the same exceptions (`AP2GuardDenied`, `AP2DryRunResult`, `AP2GuardCommitUncertain`, `AP2GuardCommitFailed`) under the same conditions as the sync variant, plus one async-only condition: an `asyncio.CancelledError` landing while the commit POST is in flight is wrapped as `AP2GuardCommitUncertain(error_code="COMMIT_CANCELLED")` with the original cancellation chained via `__cause__`.
+
 ## From an existing AP2 SDK object
 
 If you already hold a `PaymentMandate` (and optional `CheckoutMandate`) shaped per the AP2 public examples, build an `AP2Mandate` adapter in one line. Schema renames in upstream AP2 only touch this adapter — your guard code stays stable.
@@ -100,7 +120,7 @@ Required upstream attributes (duck-typed): `payment_mandate.transaction_id`, `pa
 | `Decision.ALLOW`, body raises | **Release** | Reason `ap2_guard_failed:{ExcType}`, idempotency key includes the exception type |
 | `Decision.DENY` | **Neither** | `AP2GuardDenied` raised in `__enter__`; real money never moves |
 | HTTP / transport error on reserve | **Neither** | `AP2GuardDenied` raised; caller can retry — same consume-once scope (`open_mandate_hash` when present, otherwise `transaction_id`) ⇒ same reserve key |
-| Commit transport error / 5xx / `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` / uncaught exception | **Raise, no release** | `AP2GuardCommitUncertain` raised. The commit POST may have reached and mutated Cycles before the failure, so auto-release could undo a successful settle. `error_code` distinguishes the flavor (`TRANSPORT_ERROR`, `SERVER_ERROR`, `COMMIT_RAISED`, or the specific code) |
+| Commit transport error / 5xx / `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` / uncaught exception / `asyncio.CancelledError` (async only) | **Raise, no release** | `AP2GuardCommitUncertain` raised. The commit POST may have reached and mutated Cycles before the failure, so auto-release could undo a successful settle. `error_code` distinguishes the flavor (`TRANSPORT_ERROR`, `SERVER_ERROR`, `COMMIT_RAISED`, `COMMIT_CANCELLED` *(async only)*, or the specific code) |
 | Commit returns 4xx with unrecognized code | **Release + raise** | Server explicitly rejected the request (malformed, forbidden, etc.) — release is safe. `AP2GuardCommitFailed` raised with `released` + `release_error` so the caller can still see the reconciliation context |
 | `guard.abort(reason)` called inside `with` | **Release** | Reason `ap2_guard_aborted:{reason}` |
 | `dry_run=True` | **Neither** | `__enter__` raises `AP2DryRunResult` carrying the decision payload — the `with` body never runs, so a real PSP call cannot leak under a dry-run probe |
@@ -196,7 +216,7 @@ Exception hierarchy:
 | `AP2GuardError` | Base for all AP2-guard errors |
 | `AP2GuardDenied` | Cycles returned `DENY` or the reserve POST failed |
 | `AP2DryRunResult` | Raised from `__enter__` when `dry_run=True` — carries the decision payload; the `with` body never executes |
-| `AP2GuardCommitUncertain` | Commit outcome is unknown after the body ran. Covers terminal status codes (`RESERVATION_FINALIZED`, `RESERVATION_EXPIRED`, `IDEMPOTENCY_MISMATCH`), transport-level failures (`error_code="TRANSPORT_ERROR"`), 5xx server errors (`error_code="SERVER_ERROR"` or specific code), and uncaught exceptions during commit (`error_code="COMMIT_RAISED"`, with the original chained via `__cause__`). **No auto-release** — the POST may have mutated Cycles before the failure. Reconcile with PSP |
+| `AP2GuardCommitUncertain` | Commit outcome is unknown after the body ran. Covers terminal status codes (`RESERVATION_FINALIZED`, `RESERVATION_EXPIRED`, `IDEMPOTENCY_MISMATCH`), transport-level failures (`error_code="TRANSPORT_ERROR"`), 5xx server errors (`error_code="SERVER_ERROR"` or specific code), uncaught exceptions during commit (`error_code="COMMIT_RAISED"`, original chained via `__cause__`), and — **async only** — `asyncio.CancelledError` mid-flight (`error_code="COMMIT_CANCELLED"`, original chained via `__cause__`). **No auto-release** — the POST may have mutated Cycles before the failure. Reconcile with PSP |
 | `AP2GuardCommitFailed` | Commit was rejected with an unrecognized code after the body ran. Check `.released` (bool) and `.release_error` (string \| None) on the exception — `released=False` means budget is stranded until TTL; reconcile with PSP either way |
 | `AP2CurrencyError` | Non-USD mandate in v0.1 (subclass of `ValueError`) |
 | `AP2MandateError` | Adapter input is malformed — NaN, infinity, sub-micro precision, missing payee, etc. (subclass of `ValueError`) |

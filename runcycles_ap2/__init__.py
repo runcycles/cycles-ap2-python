@@ -11,10 +11,15 @@ from runcycles_ap2.exceptions import (
     AP2GuardError,
     AP2MandateError,
 )
-from runcycles_ap2.guard import GuardedPayment, cycles_guard_payment
+from runcycles_ap2.guard import (
+    AsyncGuardedPayment,
+    GuardedPayment,
+    cycles_guard_payment,
+    cycles_guard_payment_async,
+)
 from runcycles_ap2.models import AP2Mandate, RuntimeAuthorityReceipt
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AP2CurrencyError",
@@ -25,8 +30,10 @@ __all__ = [
     "AP2GuardError",
     "AP2Mandate",
     "AP2MandateError",
+    "AsyncGuardedPayment",
     "GuardedPayment",
     "RuntimeAuthorityReceipt",
     "cycles_guard_payment",
+    "cycles_guard_payment_async",
     "__version__",
 ]
