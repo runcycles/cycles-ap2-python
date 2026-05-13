@@ -263,6 +263,11 @@ pytest --cov=runcycles_ap2 --cov-fail-under=95
 
 CI runs all three checks on Python 3.10 and 3.12 for every push and pull request. See [`AUDIT.md`](AUDIT.md) for the protocol-conformance posture, [`CHANGELOG.md`](CHANGELOG.md) for the release log.
 
+## Background
+
+- [Preventing AP2 Open-Mandate Overuse with Runtime Idempotency](https://runcycles.io/blog/ap2-open-mandate-consume-once-runtime-idempotency) — engineering write-up of the keying decision (`open_mandate_hash` vs `transaction_id`), post-PSP commit uncertainty, and the AP2 §6 consume-once defense.
+- [AP2 GitHub Discussion #262](https://github.com/google-agentic-commerce/AP2/discussions/262) — context and a couple of spec-level questions (hash canonicalization, adapter shape) posted on the upstream AP2 repo.
+
 ## Documentation
 
 - [AP2 Protocol Spec](https://ap2-protocol.org/) — Google's upstream specification
