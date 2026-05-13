@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-13
+
+### Added
+- `AsyncGuardedPayment` and `cycles_guard_payment_async(...)` — async-context-manager variant for asyncio runtimes (FastAPI, anyio, OpenAI async SDK, etc.). Same exception contract, same idempotency-key derivation (including the open-mandate consume-once scope), and same commit-uncertainty handling as the sync `GuardedPayment`.
+- New example `examples/ap2_human_not_present_async.py`.
+- README "Async variant (v0.2+)" quickstart snippet.
+- 18 new tests in `tests/test_async_guard.py` mirroring the sync test surface; total 128 tests, ≥ 95% coverage, ruff + mypy strict.
+
+### Unchanged
+- No wire-shape changes. No exception or validation changes. Existing v0.1.x sync callers see the API entirely unchanged.
+
+### Still planned for v0.3
+- Multi-currency.
+- `payment.refund` helper.
+- Server-verifiable runtime-authority receipt (requires `cycles-protocol` signed-receipt field).
+
 ## [0.1.0] — 2026-05-13
 
 ### Added
@@ -26,10 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AP2Mandate.from_ap2()` preserves an empty upstream `checkout_hash` so the model's `min_length=1` constraint can reject it (was previously masked to `None` by a falsy-`or` short-circuit).
 - 110 tests, ≥ 95% coverage, ruff + mypy strict.
 
-### Planned for v0.2
-- `AsyncGuardedPayment` (asyncio).
+### Planned for v0.3
 - Multi-currency.
 - `payment.refund` helper.
-
-### Planned for v0.3
 - Server-verifiable runtime-authority receipt (requires `cycles-protocol` signed-receipt field).

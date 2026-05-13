@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from runcycles.client import CyclesClient
+from runcycles.client import AsyncCyclesClient, CyclesClient
 from runcycles.response import CyclesResponse
 
 from runcycles_ap2.models import AP2Mandate
@@ -79,6 +79,21 @@ def commit_error_response(error_code: str, status: int = 409) -> CyclesResponse:
 def mock_client() -> MagicMock:
     """A MagicMock matching the CyclesClient surface used by GuardedPayment."""
     mock = MagicMock(spec=CyclesClient)
+    return mock
+
+
+@pytest.fixture
+def async_mock_client() -> MagicMock:
+    """AsyncMock for AsyncCyclesClient — used by AsyncGuardedPayment tests.
+
+    ``MagicMock(spec=AsyncCyclesClient)`` alone returns regular MagicMocks for the
+    awaitable methods. We replace the three I/O methods with ``AsyncMock`` so they
+    work under ``await``.
+    """
+    mock = MagicMock(spec=AsyncCyclesClient)
+    mock.create_reservation = AsyncMock()
+    mock.commit_reservation = AsyncMock()
+    mock.release_reservation = AsyncMock()
     return mock
 
 

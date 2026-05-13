@@ -2,6 +2,28 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — v0.2.0 — AsyncGuardedPayment
+
+**Author:** v0.2.0 release
+**Scope:** new public API surface (async). No wire-shape, exception, or validation changes.
+
+- Added `runcycles_ap2.AsyncGuardedPayment` — async context manager (`async with`) that mirrors `GuardedPayment` exactly.
+- Added `runcycles_ap2.cycles_guard_payment_async(...)` factory.
+- The async variant uses `runcycles.AsyncCyclesClient` for I/O; everything else (idempotency keying, mapping, validation, exceptions, receipt construction) is shared via the existing module-level helpers.
+- Behaviour parity with the sync variant on every documented contract: same `AP2GuardDenied` on DENY / failed reserve, same `AP2DryRunResult` on dry-run, same `AP2GuardCommitUncertain` on post-PSP unknown outcomes (terminal codes / transport / 5xx / uncaught), same `AP2GuardCommitFailed` on 4xx unrecognized commit rejection, same auto-release on exception inside the body, same idempotency-key derivation including the open-mandate consume-once scope.
+- New example: `examples/ap2_human_not_present_async.py`.
+- README quickstart now includes an "Async variant (v0.2+)" snippet.
+
+**Public API additions:**
+- `AsyncGuardedPayment` class
+- `cycles_guard_payment_async(...)` factory
+
+**Test posture after addition:**
+- 128 tests (up from 110), 97.60% coverage.
+- 18 new tests in `tests/test_async_guard.py` mirror the sync test surface.
+
+**No protocol changes. No wire-shape changes.** Existing v0.1.x callers see the sync API entirely unchanged.
+
 ## 2026-05-13 — positioning-review round 4 (ASCII suffix + empty-hash preservation + docstrings)
 
 **Author:** strategic/positioning review round 4 (PR #2 still in-flight)

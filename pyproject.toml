@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runcycles-ap2"
-version = "0.1.0"
+version = "0.2.0"
 description = "Runtime authority guard for AP2 (Agent Payments Protocol) — reserve, commit, release around agent payment mandates to prevent mandate reuse, double-spend, and concurrent checkout attempts. Works with Google's AP2 spec and any AP2-compatible SDK."
 readme = "README.md"
 license = "Apache-2.0"

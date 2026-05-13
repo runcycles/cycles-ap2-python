@@ -80,6 +80,26 @@ with CyclesClient(config) as client:
     print(guard.receipt)  # client-side runtime-authority receipt
 ```
 
+### Async variant (v0.2+)
+
+Same contract, asyncio I/O. Use this when your agent runtime is async (FastAPI, anyio, the OpenAI async SDK, etc.):
+
+```python
+from runcycles import AsyncCyclesClient, CyclesConfig
+from runcycles_ap2 import AP2Mandate, cycles_guard_payment_async
+
+async def charge(mandate: AP2Mandate) -> None:
+    config = CyclesConfig.from_env()
+    async with AsyncCyclesClient(config) as client:
+        async with cycles_guard_payment_async(
+            client, mandate=mandate, run_id="run_abc123", tenant="acme",
+        ) as guard:
+            psp_receipt = await psp.charge_async(mandate)
+            guard.attach_receipt_fields(psp_ref=psp_receipt.id)
+```
+
+`AsyncGuardedPayment` raises the same exceptions (`AP2GuardDenied`, `AP2DryRunResult`, `AP2GuardCommitUncertain`, `AP2GuardCommitFailed`) under the same conditions as the sync variant.
+
 ## From an existing AP2 SDK object
 
 If you already hold a `PaymentMandate` (and optional `CheckoutMandate`) shaped per the AP2 public examples, build an `AP2Mandate` adapter in one line. Schema renames in upstream AP2 only touch this adapter — your guard code stays stable.
