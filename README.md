@@ -100,7 +100,7 @@ Required upstream attributes (duck-typed): `payment_mandate.transaction_id`, `pa
 | `Decision.ALLOW`, body completes | **Commit** | Server idempotency key derived from the consume-once scope (`open_mandate_hash` when present, otherwise `transaction_id`) — see *Deterministic idempotency keys* below |
 | `Decision.ALLOW`, body raises | **Release** | Reason `ap2_guard_failed:{ExcType}`, idempotency key includes the exception type |
 | `Decision.DENY` | **Neither** | `AP2GuardDenied` raised in `__enter__`; real money never moves |
-| HTTP / transport error on reserve | **Neither** | `AP2GuardDenied` raised; caller can retry — same `transaction_id` ⇒ same reserve key |
+| HTTP / transport error on reserve | **Neither** | `AP2GuardDenied` raised; caller can retry — same consume-once scope (`open_mandate_hash` when present, otherwise `transaction_id`) ⇒ same reserve key |
 | Commit transport error / 5xx / `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` / uncaught exception | **Raise, no release** | `AP2GuardCommitUncertain` raised. The commit POST may have reached and mutated Cycles before the failure, so auto-release could undo a successful settle. `error_code` distinguishes the flavor (`TRANSPORT_ERROR`, `SERVER_ERROR`, `COMMIT_RAISED`, or the specific code) |
 | Commit returns 4xx with unrecognized code | **Release + raise** | Server explicitly rejected the request (malformed, forbidden, etc.) — release is safe. `AP2GuardCommitFailed` raised with `released` + `release_error` so the caller can still see the reconciliation context |
 | `guard.abort(reason)` called inside `with` | **Release** | Reason `ap2_guard_aborted:{reason}` |
@@ -112,7 +112,7 @@ Required upstream attributes (duck-typed): `payment_mandate.transaction_id`, `pa
 
 | AP2 source | Cycles destination | Notes |
 |---|---|---|
-| `PaymentMandate.transaction_id` | `Subject.dimensions["ap2_transaction_id"]` | also feeds idempotency keys |
+| `PaymentMandate.transaction_id` | `Subject.dimensions["ap2_transaction_id"]` | feeds the idempotency key only when `open_mandate_hash` is absent (otherwise the open mandate is the consume-once scope — see [Deterministic idempotency keys](#deterministic-idempotency-keys)) |
 | `PaymentMandate.payment_amount.value` | `Amount.amount` | Exact integer conversion to USD micro-cents (10⁻⁸ USD). Rejects NaN, ±Infinity, negative values, more than 8 decimal places, or amounts beyond int64 micro-cents |
 | `PaymentMandate.payment_amount.currency` | `Action.policy_keys.custom["currency"]` | MVP enforces `"USD"` |
 | `PaymentMandate.payee.website` | `Action.policy_keys.host` | required for policy routing |
@@ -206,7 +206,7 @@ Exception hierarchy:
 
 - **One context manager** — `cycles_guard_payment` wraps a single AP2 payment moment in reserve → commit / release.
 - **Deterministic idempotency** — no caller-supplied keys; retries replay the same reservation.
-- **Consume-once defense** — duplicate workers on the same mandate collapse onto one reservation server-side.
+- **Consume-once defense** — duplicate workers on the same mandate share one idempotency bucket server-side; identical replays return the original reservation, divergent attempts are rejected with `IDEMPOTENCY_MISMATCH`.
 - **Built-in `payment.charge` action** — no custom action-kind registration, no protocol PR required.
 - **Adapter layer** (`AP2Mandate`) insulates from upstream AP2 SDK churn.
 - **Pydantic v2 models** with strict validation.
