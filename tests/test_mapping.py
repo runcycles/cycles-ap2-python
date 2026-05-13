@@ -106,7 +106,9 @@ class TestIdempotencyKeyOpenMandateScope:
 
     def test_different_transactions_same_open_mandate_share_key(self) -> None:
         # Two checkouts spawned from one open mandate must collide on the reserve key
-        # so server-side dedup collapses them onto a single reservation.
+        # so the server sees both attempts in one (tenant, endpoint, key) bucket. The
+        # server then either replays the original response (if payload matches) or
+        # returns 409 IDEMPOTENCY_MISMATCH — either way, no second valid reservation.
         a = make_mandate(transaction_id="ap2-tx-AAA", open_mandate_hash="omh_shared")
         b = make_mandate(transaction_id="ap2-tx-BBB", open_mandate_hash="omh_shared")
         assert idempotency_key(a, "reserve") == idempotency_key(b, "reserve")
@@ -125,6 +127,32 @@ class TestIdempotencyKeyOpenMandateScope:
         m = make_mandate(transaction_id="ap2-tx-001", open_mandate_hash="omh_xyz")
         assert "open_mandate" in idempotency_key(m, "reserve")
         assert _expected_hash("ap2-tx-001") not in idempotency_key(m, "reserve")
+
+    def test_empty_open_mandate_hash_rejected_at_model_level(self) -> None:
+        # An empty string would otherwise silently fall back to the tx scope (the
+        # falsy check in consume_once_input). Model-level min_length=1 catches it.
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            AP2Mandate(
+                transaction_id="tx",
+                amount_value="1.00",
+                currency="USD",
+                payee_website="x.example",
+                open_mandate_hash="",
+            )
+
+    def test_empty_checkout_hash_rejected_at_model_level(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            AP2Mandate(
+                transaction_id="tx",
+                amount_value="1.00",
+                currency="USD",
+                payee_website="x.example",
+                checkout_hash="",
+            )
 
 
 class TestBuildSubject:

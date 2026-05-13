@@ -41,8 +41,11 @@ class GuardedPayment:
       - Commit rejected with unrecognized code → raises :class:`AP2GuardCommitFailed`
         after attempting a release; check the exception's ``released`` /
         ``release_error`` attributes to know whether budget was recovered.
-      - Same ``transaction_id`` on a retry → server returns the original reservation
-        (idempotent replay) because the idempotency key is deterministic.
+      - Same consume-once key on a retry (``open_mandate_hash`` when present,
+        otherwise ``transaction_id``) → both attempts hit the same Cycles idempotency
+        bucket. Same payload replays the original reservation; divergent payload is
+        rejected by the server with ``IDEMPOTENCY_MISMATCH`` (surfaced as
+        :class:`AP2GuardDenied`).
     """
 
     def __init__(

@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Post-conversion int64 boundary check (`micros <= 2**63 - 1`) rejects amounts one over int64.max client-side instead of relying on the server. Applied symmetrically to `AP2Mandate.amount_micros()` and `GuardedPayment.set_actual_micros()` so a caller-supplied commit override cannot bypass the cap.
 - `set_actual_micros()` raises `AP2MandateError` (a `ValueError` subclass) for both negative and over-int64 inputs, plus any non-int type (notably `bool` and `float`, which numerical comparisons would otherwise let slip through).
 - Direct callers of `mapping.build_commit_body(actual_micros=...)` get the same input validation via a shared private validator.
-- 100 tests, ≥ 95% coverage, ruff + mypy strict.
+- `AP2Mandate.checkout_hash` and `open_mandate_hash` require `min_length=1` when present — empty strings would otherwise silently fall back to the transaction-id lock scope.
+- 103 tests, ≥ 95% coverage, ruff + mypy strict.
 
 ### Planned for v0.2
 - `AsyncGuardedPayment` (asyncio).

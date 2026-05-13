@@ -2,6 +2,24 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — positioning-review follow-ups (wording accuracy + empty-hash guard)
+
+**Author:** strategic/positioning review round 2 (PR #2 in-flight)
+**Scope:** documentation accuracy, additional regression coverage, defensive validation
+
+1. **Reworded "collapses onto one reservation"** — earlier wording implied server-side merging when the actual semantics are: same key + same payload replays the original; same key + divergent payload returns `409 IDEMPOTENCY_MISMATCH` (surfaced as `AP2GuardDenied`). Both prevent a second valid reservation, but the mechanism differs. README, AUDIT, and two test docstrings now describe the actual contract. The consume-once defense itself is unchanged.
+
+2. **Stale `transaction_id`-only retry wording** — `GuardedPayment.__doc__` and the README lifecycle table still implied the retry/lock key is always `transaction_id`. Generalized to "consume-once key (`open_mandate_hash` when present, otherwise `transaction_id`)".
+
+3. **New regression test for IDEMPOTENCY_MISMATCH on second reserve** — `test_open_mandate_divergent_payload_reserve_mismatch_raises_denied` exercises the second half of the consume-once contract: same open mandate hash, distinct transaction_id, first reserve allows, second reserve gets 409 from server → `AP2GuardDenied(reason_code="IDEMPOTENCY_MISMATCH")`. Documents the actual server semantics for divergent payloads sharing the open-mandate scope.
+
+4. **Reject empty `open_mandate_hash` / `checkout_hash`** — pydantic `min_length=1` on both fields. Previously an empty string would pass model validation, then `consume_once_input`'s truthy check would silently fall back to the `tx` scope — data corruption disguised as the default. Now fails fast at model construction. Two new tests cover the rejection paths.
+
+**Test posture after fixes:**
+- 103 tests (up from 100), 98.35% coverage.
+
+No public API additions in this round.
+
 ## 2026-05-13 — positioning-review fixes (P0-A consume-once, P0-B commit-uncertain)
 
 **Author:** strategic/positioning review response (still v0.1.0; not yet on PyPI)

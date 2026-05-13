@@ -32,7 +32,7 @@ From the AP2 spec, human-not-present flows let the agent act autonomously using 
 
 That is a **runtime-state** problem: concurrency, retries, in-flight attempts, quota counters, consume-once. AP2 mandates are cryptographic *authorization*. Cycles adds the missing runtime enforcement.
 
-When an `AP2Mandate` carries an `open_mandate_hash`, this package keys the consume-once lock on the open mandate (not the transaction id) — so every checkout derived from the same open mandate collapses onto a single reservation server-side, even when their transaction ids differ. See [Deterministic idempotency keys](#deterministic-idempotency-keys) below.
+When an `AP2Mandate` carries an `open_mandate_hash`, this package keys the consume-once lock on the open mandate (not the transaction id) — so every checkout derived from the same open mandate shares one idempotency bucket, even when their transaction ids differ. Identical replays return the original reservation; divergent attempts hit `IDEMPOTENCY_MISMATCH` server-side. Either way the second attempt cannot create a second valid reservation. See [Deterministic idempotency keys](#deterministic-idempotency-keys) below.
 
 ## What this does NOT do
 
@@ -97,7 +97,7 @@ Required upstream attributes (duck-typed): `payment_mandate.transaction_id`, `pa
 
 | Scenario | Outcome | Detail |
 |---|---|---|
-| `Decision.ALLOW`, body completes | **Commit** | Server idempotency key derived from `transaction_id` — see *Deterministic idempotency keys* below |
+| `Decision.ALLOW`, body completes | **Commit** | Server idempotency key derived from the consume-once scope (`open_mandate_hash` when present, otherwise `transaction_id`) — see *Deterministic idempotency keys* below |
 | `Decision.ALLOW`, body raises | **Release** | Reason `ap2_guard_failed:{ExcType}`, idempotency key includes the exception type |
 | `Decision.DENY` | **Neither** | `AP2GuardDenied` raised in `__enter__`; real money never moves |
 | HTTP / transport error on reserve | **Neither** | `AP2GuardDenied` raised; caller can retry — same `transaction_id` ⇒ same reserve key |
@@ -131,8 +131,15 @@ The wrapper computes idempotency keys from the mandate; callers MUST NOT pass th
 
 | Mandate carries… | Key shape | Lock boundary |
 |---|---|---|
-| `open_mandate_hash` (human-not-present) | `ap2:open_mandate:{sha256(open_mandate_hash)[:32]}:{phase}[:{suffix}]` | every checkout derived from one open mandate collapses onto a single reservation |
+| `open_mandate_hash` (human-not-present) | `ap2:open_mandate:{sha256(open_mandate_hash)[:32]}:{phase}[:{suffix}]` | every checkout derived from one open mandate uses the same reserve idempotency key |
 | only `transaction_id` (default / human-present) | `ap2:tx:{sha256(transaction_id)[:32]}:{phase}[:{suffix}]` | one `transaction_id` == one payment attempt |
+
+**What sharing a key actually gets you**, per Cycles idempotency semantics:
+
+- Same key + **identical payload** → server replays the original response (same `reservation_id`).
+- Same key + **divergent payload** (different `transaction_id`, `checkout_hash`, amount, etc.) → server rejects with `409 IDEMPOTENCY_MISMATCH`, surfaced as `AP2GuardDenied(reason_code="IDEMPOTENCY_MISMATCH")`.
+
+Either way, the second attempt cannot create a second valid reservation — that's the consume-once defense. Multiple distinct checkouts from one open mandate are forced into the same idempotency bucket, so the server sees the conflict.
 
 The scope namespace (`open_mandate` or `tx`) is embedded in the key so the two buckets never collide server-side. The hash is fixed-length (SHA-256 truncated to 32 hex chars, 128-bit collision resistance), header-safe, and the phase suffix (`reserve` / `commit` / `release:{ExcType}`) is always preserved.
 

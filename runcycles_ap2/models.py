@@ -43,8 +43,13 @@ class AP2Mandate(BaseModel):
     amount_value: Annotated[str, Field(min_length=1, max_length=64)]
     currency: Annotated[str, Field(min_length=3, max_length=3)]
     payee_website: Annotated[str, Field(min_length=1, max_length=253)]
-    checkout_hash: Annotated[str, Field(max_length=256)] | None = None
-    open_mandate_hash: Annotated[str, Field(max_length=256)] | None = None
+    # ``checkout_hash`` and ``open_mandate_hash`` MUST be non-empty when present.
+    # An empty string would silently fall back to the transaction-id lock scope (the
+    # falsy check in :func:`consume_once_input`), which is data corruption disguised
+    # as the default. Pydantic enforces min_length=1; callers should pass ``None`` to
+    # mean "not present".
+    checkout_hash: Annotated[str, Field(min_length=1, max_length=256)] | None = None
+    open_mandate_hash: Annotated[str, Field(min_length=1, max_length=256)] | None = None
 
     def amount_micros(self) -> int:
         """Convert ``amount_value`` (decimal string in major units) to USD micro-cents.
