@@ -1,0 +1,116 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "runcycles-ap2"
+version = "0.1.0"
+description = "Runtime authority guard for AP2 (Agent Payments Protocol) — reserve, commit, release around agent payment mandates to prevent mandate reuse, double-spend, and concurrent checkout attempts. Works with Google's AP2 spec and any AP2-compatible SDK."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+keywords = [
+    # Category-search keywords (lead with these — what people actually type)
+    "ap2",
+    "agent-payments",
+    "agent-payments-protocol",
+    "agentic-commerce",
+    "agentic-payments",
+    "ai-payments",
+    "mandate",
+    "payment-mandate",
+    "checkout-mandate",
+    "payment-guard",
+    "payment-authorization",
+    "consume-once",
+    "double-spend",
+    "double-spend-prevention",
+    "idempotent-payments",
+    "runtime-authority",
+    "agent-governance",
+    "agent-budget",
+    "budget-control",
+    "spending-limit",
+    # Framework / ecosystem
+    "google-agentic-commerce",
+    "a2a",
+    "mcp",
+    "ucp",
+    "langchain",
+    "openai-agents",
+    "crewai",
+    "autogen",
+    # Brand
+    "cycles",
+    "runcycles",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "runcycles>=0.4.1",
+    "pydantic>=2.0",
+]
+
+[project.urls]
+Homepage = "https://runcycles.io"
+Documentation = "https://runcycles.io"
+Repository = "https://github.com/runcycles/cycles-ap2-python"
+Changelog = "https://github.com/runcycles/cycles-ap2-python/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/runcycles/cycles-ap2-python/issues"
+"AP2 Protocol" = "https://github.com/google-agentic-commerce/AP2"
+"Cycles Protocol" = "https://github.com/runcycles/cycles-protocol"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "pytest-httpx>=0.30",
+    "mypy>=1.0",
+    "ruff>=0.1",
+    "respx>=0.21",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["runcycles_ap2"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+# The PyPI `runcycles` wheel does not ship a py.typed marker, so mypy can't analyze it.
+# Silence the resulting `import-untyped` errors without weakening strictness on our own code.
+disable_error_code = ["import-untyped"]
+
+[[tool.mypy.overrides]]
+module = ["runcycles", "runcycles.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["runcycles_ap2"]
+
+[tool.coverage.report]
+fail_under = 95
