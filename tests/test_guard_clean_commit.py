@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from runcycles_ap2 import cycles_guard_payment
+from runcycles_ap2.mapping import idempotency_key
 from tests.conftest import allow_response, commit_success_response
 
 
@@ -20,7 +21,7 @@ class TestCleanCommit:
         mock_client.commit_reservation.assert_called_once()
         called_id, called_body = mock_client.commit_reservation.call_args[0]
         assert called_id == "rsv_clean_001"
-        assert called_body["idempotency_key"] == "ap2:ap2-tx-001:commit"
+        assert called_body["idempotency_key"] == idempotency_key("ap2-tx-001", "commit")
         assert called_body["actual"] == {"unit": "USD_MICROCENTS", "amount": 19_900_000_000}
         mock_client.release_reservation.assert_not_called()
 
@@ -74,7 +75,7 @@ class TestCleanCommit:
             pass
 
         body = mock_client.create_reservation.call_args[0][0]
-        assert body["idempotency_key"] == "ap2:ap2-tx-001:reserve"
+        assert body["idempotency_key"] == idempotency_key("ap2-tx-001", "reserve")
         assert body["action"]["policy_keys"]["host"] == "merchant.example"
         assert body["action"]["policy_keys"]["custom"]["payment_protocol"] == "ap2"
         assert body["subject"]["dimensions"]["ap2_transaction_id"] == "ap2-tx-001"

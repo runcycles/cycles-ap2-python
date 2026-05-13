@@ -31,5 +31,11 @@ RECEIPT_SCHEMA: Final[str] = "runtime_authority.ap2.payment.charge.v1"
 # Idempotency key prefix used for all phases.
 IDEMPOTENCY_PREFIX: Final[str] = "ap2"
 
+# Length of the hex-encoded SHA-256 prefix used in idempotency keys.
+# 32 hex chars == 128 bits of collision resistance. Keys stay well inside the 256-char
+# protocol cap, so the phase suffix (`reserve`/`commit`/`release:{ExcType}`) is always
+# preserved — which is what protects the consume-once defense.
+TRANSACTION_ID_HASH_LEN: Final[int] = 32
+
 # USD micro-cents conversion (1 USD == 1e8 micro-cents).
 USD_MICROCENTS_PER_DOLLAR: Final[int] = 100_000_000

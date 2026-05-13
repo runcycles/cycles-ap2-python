@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from runcycles_ap2._constants import (
@@ -11,6 +13,7 @@ from runcycles_ap2._constants import (
     DIM_CHECKOUT_HASH,
     DIM_OPEN_MANDATE_HASH,
     DIM_RUN_ID,
+    TRANSACTION_ID_HASH_LEN,
 )
 from runcycles_ap2.exceptions import AP2CurrencyError, AP2MandateError
 from runcycles_ap2.mapping import (
@@ -26,25 +29,58 @@ from runcycles_ap2.models import AP2Mandate
 from tests.conftest import make_mandate
 
 
+def _expected_hash(tx: str) -> str:
+    return hashlib.sha256(tx.encode("utf-8")).hexdigest()[:TRANSACTION_ID_HASH_LEN]
+
+
 class TestIdempotencyKey:
     def test_reserve_phase(self) -> None:
-        assert idempotency_key("ap2-tx-001", "reserve") == "ap2:ap2-tx-001:reserve"
+        h = _expected_hash("ap2-tx-001")
+        assert idempotency_key("ap2-tx-001", "reserve") == f"ap2:{h}:reserve"
 
     def test_commit_phase(self) -> None:
-        assert idempotency_key("ap2-tx-001", "commit") == "ap2:ap2-tx-001:commit"
+        h = _expected_hash("ap2-tx-001")
+        assert idempotency_key("ap2-tx-001", "commit") == f"ap2:{h}:commit"
 
     def test_release_with_suffix(self) -> None:
-        assert idempotency_key("ap2-tx-001", "release", "RuntimeError") == "ap2:ap2-tx-001:release:RuntimeError"
+        h = _expected_hash("ap2-tx-001")
+        assert idempotency_key("ap2-tx-001", "release", "RuntimeError") == f"ap2:{h}:release:RuntimeError"
 
     def test_release_sanitizes_unsafe_chars(self) -> None:
-        # Spaces and slashes must be replaced so the key stays a valid header value.
+        # Whitespace, slashes, and other header-unsafe chars get replaced with `_`.
+        h = _expected_hash("tx")
         key = idempotency_key("tx", "release", "some/bad value")
-        assert key == "ap2:tx:release:some_bad_value"
+        assert key == f"ap2:{h}:release:some_bad_value"
 
-    def test_total_length_capped(self) -> None:
-        long_tx = "x" * 400
-        key = idempotency_key(long_tx, "commit")
-        assert len(key) <= 256
+    def test_long_transaction_id_does_not_drop_phase(self) -> None:
+        # P1 regression: a 256-char tx_id used to overflow the cap and have the phase
+        # suffix sliced off. Now the hash is fixed-length, so all phases stay distinct.
+        long_tx = "x" * 256
+        reserve = idempotency_key(long_tx, "reserve")
+        commit = idempotency_key(long_tx, "commit")
+        release = idempotency_key(long_tx, "release", "RuntimeError")
+        assert reserve.endswith(":reserve")
+        assert commit.endswith(":commit")
+        assert release.endswith(":release:RuntimeError")
+        assert reserve != commit != release
+
+    def test_distinct_long_tx_ids_yield_distinct_keys(self) -> None:
+        # P1 regression: two tx_ids sharing the first 252 chars used to collide on
+        # reserve. SHA-256 distinguishes them.
+        a = ("y" * 252) + "AAAA"
+        b = ("y" * 252) + "BBBB"
+        assert idempotency_key(a, "reserve") != idempotency_key(b, "reserve")
+
+    def test_unsafe_transaction_id_chars_do_not_leak_to_header(self) -> None:
+        # P1 regression: tx_ids containing whitespace / control bytes used to reach the
+        # Idempotency-Key header. The hash output is hex only — header-safe by design.
+        key = idempotency_key("tx with\nnewline\tand\r\x00null", "reserve")
+        assert "\n" not in key and "\t" not in key and "\r" not in key and "\x00" not in key
+        assert all(c.isalnum() or c in (":", "_", "-", ".") for c in key)
+
+    def test_key_length_bounded(self) -> None:
+        # Hash + phase + suffix always fits inside the protocol's 256-char cap.
+        assert len(idempotency_key("x" * 1024, "release", "x" * 1024)) <= 256
 
 
 class TestBuildSubject:
@@ -153,6 +189,32 @@ class TestAmountMicros:
         with pytest.raises(AP2MandateError):
             m.amount_micros()
 
+    def test_nan_raises(self) -> None:
+        m = AP2Mandate(transaction_id="tx", amount_value="NaN", currency="USD", payee_website="x.example")
+        with pytest.raises(AP2MandateError):
+            m.amount_micros()
+
+    def test_infinity_raises(self) -> None:
+        m = AP2Mandate(transaction_id="tx", amount_value="Infinity", currency="USD", payee_website="x.example")
+        with pytest.raises(AP2MandateError):
+            m.amount_micros()
+
+    def test_negative_infinity_raises(self) -> None:
+        m = AP2Mandate(transaction_id="tx", amount_value="-Infinity", currency="USD", payee_website="x.example")
+        with pytest.raises(AP2MandateError):
+            m.amount_micros()
+
+    def test_sub_micro_precision_raises(self) -> None:
+        # 9 decimal places — below USD_MICROCENTS resolution.
+        m = AP2Mandate(transaction_id="tx", amount_value="1.123456789", currency="USD", payee_website="x.example")
+        with pytest.raises(AP2MandateError):
+            m.amount_micros()
+
+    def test_exactly_eight_decimals_accepted(self) -> None:
+        m = AP2Mandate(transaction_id="tx", amount_value="1.12345678", currency="USD", payee_website="x.example")
+        # 1.12345678 * 1e8 = 112345678 micro-cents — exact, no precision loss.
+        assert m.amount_micros() == 112_345_678
+
 
 class TestBuildReservationBody:
     def test_full_shape(self) -> None:
@@ -170,7 +232,7 @@ class TestBuildReservationBody:
             overage_policy="REJECT",
             dry_run=False,
         )
-        assert body["idempotency_key"] == "ap2:ap2-tx-001:reserve"
+        assert body["idempotency_key"] == f"ap2:{_expected_hash('ap2-tx-001')}:reserve"
         assert body["subject"]["tenant"] == "acme"
         assert body["action"]["kind"] == "payment.charge"
         assert body["estimate"] == {"unit": "USD_MICROCENTS", "amount": 19_900_000_000}
@@ -218,7 +280,7 @@ class TestBuildCommitBody:
     def test_defaults_to_mandate_amount(self) -> None:
         body = build_commit_body(make_mandate())
         assert body["actual"]["amount"] == 19_900_000_000
-        assert body["idempotency_key"] == "ap2:ap2-tx-001:commit"
+        assert body["idempotency_key"] == f"ap2:{_expected_hash('ap2-tx-001')}:commit"
 
     def test_actual_override(self) -> None:
         body = build_commit_body(make_mandate(), actual_micros=5_000_000_000)
@@ -232,7 +294,7 @@ class TestBuildCommitBody:
 class TestBuildReleaseBody:
     def test_with_exception_type(self) -> None:
         body = build_release_body(make_mandate(), reason="fail", exception_type="RuntimeError")
-        assert body["idempotency_key"] == "ap2:ap2-tx-001:release:RuntimeError"
+        assert body["idempotency_key"] == f"ap2:{_expected_hash('ap2-tx-001')}:release:RuntimeError"
         assert body["reason"] == "fail"
 
     def test_reason_truncated(self) -> None:

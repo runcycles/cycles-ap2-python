@@ -10,6 +10,7 @@ reservation — that is the consume-once defense.
 from __future__ import annotations
 
 from runcycles_ap2 import cycles_guard_payment
+from runcycles_ap2.mapping import idempotency_key
 from tests.conftest import allow_response, commit_success_response, make_mandate
 
 
@@ -28,11 +29,13 @@ class TestDoubleSpend:
 
         body1 = mock_client.create_reservation.call_args_list[0][0][0]
         body2 = mock_client.create_reservation.call_args_list[1][0][0]
-        assert body1["idempotency_key"] == body2["idempotency_key"] == "ap2:ap2-tx-shared:reserve"
+        expected_reserve = idempotency_key("ap2-tx-shared", "reserve")
+        expected_commit = idempotency_key("ap2-tx-shared", "commit")
+        assert body1["idempotency_key"] == body2["idempotency_key"] == expected_reserve
         # Commit keys also collide — the server collapses both onto one reservation.
         commit1 = mock_client.commit_reservation.call_args_list[0][0][1]
         commit2 = mock_client.commit_reservation.call_args_list[1][0][1]
-        assert commit1["idempotency_key"] == commit2["idempotency_key"] == "ap2:ap2-tx-shared:commit"
+        assert commit1["idempotency_key"] == commit2["idempotency_key"] == expected_commit
 
     def test_different_transactions_produce_different_keys(self, mock_client) -> None:
         mock_client.create_reservation.return_value = allow_response()

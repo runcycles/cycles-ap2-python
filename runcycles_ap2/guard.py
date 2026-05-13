@@ -11,7 +11,7 @@ from runcycles.client import CyclesClient
 from runcycles.models import Decision, ReservationCreateResponse
 
 from runcycles_ap2._constants import DEFAULT_ACTION_KIND, DEFAULT_OVERAGE_POLICY, DEFAULT_TTL_MS
-from runcycles_ap2.exceptions import AP2GuardDenied
+from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardDenied
 from runcycles_ap2.mapping import (
     build_action,
     build_commit_body,
@@ -156,13 +156,23 @@ class GuardedPayment:
             )
 
         if self._dry_run:
-            # Dry-run is a "would allow" probe; no reservation_id, no commit/release on exit.
+            # Dry-run is a policy probe — NEVER execute the `with` body. If we returned
+            # `self` here, callers running a real PSP charge inside the block would move
+            # money with no Cycles record. Raising blocks the body unconditionally; the
+            # decision payload rides on the exception.
             logger.info(
                 "AP2 dry-run evaluated: decision=%s, tx=%s",
                 result.decision,
                 self._mandate.transaction_id,
             )
-            return self
+            raise AP2DryRunResult(
+                f"AP2 dry-run decision={result.decision.value} for transaction {self._mandate.transaction_id}",
+                decision=result.decision.value,
+                reason_code=result.reason_code,
+                caps=result.caps,
+                balances=result.balances,
+                affected_scopes=result.affected_scopes,
+            )
 
         if result.reservation_id is None:
             raise AP2GuardDenied(
@@ -185,8 +195,8 @@ class GuardedPayment:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if self._dry_run:
-            return  # nothing to commit or release on dry-run
+        # NOTE: dry-run no longer reaches __exit__ — __enter__ raises AP2DryRunResult
+        # before returning, so the `with` body never executes.
         if self._reservation_id is None:
             return  # nothing to clean up (denial path already raised)
 
@@ -228,7 +238,10 @@ class GuardedPayment:
 
         error = response.get_error_response()
         error_code = error.error_code.value if (error and error.error_code) else None
+        request_id = error.request_id if error else None
         if error_code in ("RESERVATION_FINALIZED", "RESERVATION_EXPIRED", "IDEMPOTENCY_MISMATCH"):
+            # Benign replay: a previous attempt already finalized the reservation. The
+            # caller's payment record is correct from that prior attempt; nothing to do.
             logger.warning(
                 "AP2 commit returned %s (no release): id=%s, tx=%s",
                 error_code,
@@ -237,6 +250,9 @@ class GuardedPayment:
             )
             return
 
+        # Unrecognized commit rejection. The PSP may already have moved money, so we
+        # release the budget and raise — the caller MUST reconcile, and a silent
+        # `guard.committed == False` was too easy to miss.
         logger.warning(
             "AP2 commit rejected (releasing): id=%s, tx=%s, code=%s",
             self._reservation_id,
@@ -246,6 +262,13 @@ class GuardedPayment:
         self._handle_release(
             reason=f"ap2_commit_rejected:{error_code or 'UNKNOWN'}",
             exc_name="CommitRejected",
+        )
+        raise AP2GuardCommitFailed(
+            f"AP2 commit rejected for transaction {self._mandate.transaction_id} "
+            f"(code={error_code}); reservation released. PSP state may need reconciliation.",
+            error_code=error_code,
+            request_id=request_id,
+            reservation_id=self._reservation_id,
         )
 
     def _handle_release(self, *, reason: str, exc_name: str) -> None:

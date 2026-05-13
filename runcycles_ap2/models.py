@@ -7,13 +7,17 @@ own fields or via :meth:`AP2Mandate.from_ap2` if they hold AP2 SDK objects.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from runcycles_ap2._constants import USD_MICROCENTS_PER_DOLLAR
 from runcycles_ap2.exceptions import AP2CurrencyError, AP2MandateError
+
+# USD_MICROCENTS is 10^-8 USD; anything finer than 8 decimal places in the source string
+# would be silently rounded. We reject it explicitly so callers don't lose precision.
+_MAX_DECIMAL_PLACES = 8
 
 _CONFIG = ConfigDict(populate_by_name=True, extra="forbid", str_strip_whitespace=True)
 
@@ -37,18 +41,38 @@ class AP2Mandate(BaseModel):
     def amount_micros(self) -> int:
         """Convert ``amount_value`` (decimal string in major units) to USD micro-cents.
 
-        v0.1 enforces USD only.
+        v0.1 enforces USD only. Rejects NaN, +/-Infinity, negative values, and any input
+        with more than 8 decimal places (sub-micro precision can't survive the conversion
+        and we'd rather raise than silently round). All ``decimal`` failure modes —
+        including ``InvalidOperation`` and ``OverflowError`` from the final ``int()``
+        cast — are wrapped as :class:`AP2MandateError`.
         """
         if self.currency.upper() != "USD":
             raise AP2CurrencyError(f"v0.1 supports USD only; got {self.currency!r}. Multi-currency lands in v0.2.")
         try:
             value = Decimal(self.amount_value)
-        except (ArithmeticError, ValueError) as exc:
+        except (DecimalException, ValueError) as exc:
             raise AP2MandateError(f"amount_value {self.amount_value!r} is not a valid decimal") from exc
+        if not value.is_finite():
+            raise AP2MandateError(f"amount_value must be finite; got {self.amount_value!r}")
         if value < 0:
             raise AP2MandateError("amount_value must be non-negative")
-        micros = int((value * USD_MICROCENTS_PER_DOLLAR).to_integral_value())
-        return micros
+        # `as_tuple().exponent` is the negative of the number of decimal places for
+        # finite values (e.g. "1.234" → exponent -3). It can also be a string sentinel
+        # ("n", "N", "F") for NaN/Infinity, but is_finite() above rules those out.
+        exponent = value.as_tuple().exponent
+        if isinstance(exponent, int) and exponent < -_MAX_DECIMAL_PLACES:
+            raise AP2MandateError(
+                f"amount_value {self.amount_value!r} has more than {_MAX_DECIMAL_PLACES} decimal places; "
+                "sub-micro precision would be lost"
+            )
+        try:
+            scaled = value * USD_MICROCENTS_PER_DOLLAR
+            return int(scaled.to_integral_value())
+        except (DecimalException, OverflowError, ValueError) as exc:
+            raise AP2MandateError(
+                f"amount_value {self.amount_value!r} could not be converted to USD micro-cents"
+            ) from exc
 
     @classmethod
     def from_ap2(

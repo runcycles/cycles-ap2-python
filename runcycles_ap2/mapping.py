@@ -6,6 +6,7 @@ are fully deterministic and run without a server.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from runcycles_ap2._constants import (
@@ -18,22 +19,44 @@ from runcycles_ap2._constants import (
     DIM_OPEN_MANDATE_HASH,
     DIM_RUN_ID,
     IDEMPOTENCY_PREFIX,
+    TRANSACTION_ID_HASH_LEN,
 )
 from runcycles_ap2.models import AP2Mandate
 
 
-def idempotency_key(transaction_id: str, phase: str, suffix: str | None = None) -> str:
-    """Deterministic idempotency key: ``ap2:{tx}:{phase}[:{suffix}]``.
+def _hash_transaction_id(transaction_id: str) -> str:
+    """SHA-256 of the raw ``transaction_id``, hex-encoded and truncated.
 
-    The same ``transaction_id`` reaching the same phase from any retry, parallel worker,
-    or process restart will produce the same key — that's the server-side replay defense.
+    Hashing guarantees:
+      - fixed-length output regardless of input (avoids the 256-char header truncation
+        that silently dropped the phase suffix in earlier versions);
+      - header-safe characters only (lowercase hex) — no whitespace, no control bytes;
+      - the same input always produces the same key on any platform.
+    Truncating to 32 hex chars preserves 128 bits of collision resistance — more than
+    enough for an idempotency-key namespace scoped to a single tenant.
     """
-    base = f"{IDEMPOTENCY_PREFIX}:{transaction_id}:{phase}"
+    digest = hashlib.sha256(transaction_id.encode("utf-8")).hexdigest()
+    return digest[:TRANSACTION_ID_HASH_LEN]
+
+
+def idempotency_key(transaction_id: str, phase: str, suffix: str | None = None) -> str:
+    """Deterministic idempotency key: ``ap2:{sha256(tx)[:32]}:{phase}[:{suffix}]``.
+
+    The phase suffix is ALWAYS preserved (fixed-length hash + short phase fit comfortably
+    inside the 256-char protocol cap). The same ``transaction_id`` reaching the same phase
+    from any retry, parallel worker, or process restart produces the same key — the
+    consume-once defense.
+
+    The raw ``transaction_id`` is still attached to ``Subject.dimensions["ap2_transaction_id"]``
+    on the Cycles wire payload for debug/audit; only the idempotency key uses the hash.
+    """
+    base = f"{IDEMPOTENCY_PREFIX}:{_hash_transaction_id(transaction_id)}:{phase}"
     if suffix:
-        # Strip characters that would push us over the 256-char limit or break the key shape.
+        # Header-safe charset: alphanumeric, underscore, hyphen, dot. Anything else
+        # becomes ``_`` so the resulting key is always a valid HTTP header value.
         safe_suffix = "".join(c if c.isalnum() or c in ("_", "-", ".") else "_" for c in suffix)
         base = f"{base}:{safe_suffix[:64]}"
-    return base[:256]
+    return base
 
 
 def build_subject(

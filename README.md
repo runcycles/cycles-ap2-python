@@ -2,7 +2,7 @@
 [![PyPI Downloads](https://img.shields.io/pypi/dm/runcycles-ap2)](https://pypi.org/project/runcycles-ap2/)
 [![CI](https://github.com/runcycles/cycles-ap2-python/actions/workflows/ci.yml/badge.svg)](https://github.com/runcycles/cycles-ap2-python/actions)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
-[![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)](https://github.com/runcycles/cycles-ap2-python/actions)
+[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)](https://github.com/runcycles/cycles-ap2-python/actions)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/runcycles/cycles-ap2-python/badge)](https://scorecard.dev/viewer/?uri=github.com/runcycles/cycles-ap2-python)
 
 # Cycles AP2 Guard — Runtime authority for AP2 agent payments
@@ -80,7 +80,8 @@ Required upstream attributes: `payment_mandate.transaction_id`, `payment_mandate
 | Commit returns `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` | **Neither** | Logged at warning; we never auto-release after these (a previous commit may already have charged) |
 | Commit returns other 4xx | **Release** | Reason `ap2_commit_rejected:{code}` |
 | `guard.abort(reason)` called inside `with` | **Release** | Reason `ap2_guard_aborted:{reason}` |
-| `dry_run=True` | **Neither** | Returns decision only; no reservation_id, no commit/release on exit |
+| `dry_run=True` | **Neither** | `__enter__` raises `AP2DryRunResult` carrying the decision payload — the `with` body never runs, so a real PSP call cannot leak under a dry-run probe |
+| Commit rejected with unrecognized code | **Release + raise** | Reservation released; `AP2GuardCommitFailed` raised so the caller cannot miss the reconciliation event |
 
 `AP2GuardDenied` carries `reason_code` and `request_id` for upstream logging.
 
@@ -107,11 +108,11 @@ The wrapper computes idempotency keys from `transaction_id`; callers MUST NOT pa
 
 | Phase | Key shape |
 |---|---|
-| Reserve | `ap2:{transaction_id}:reserve` |
-| Commit | `ap2:{transaction_id}:commit` |
-| Release | `ap2:{transaction_id}:release:{ExcType}` |
+| Reserve | `ap2:{sha256(transaction_id)[:32]}:reserve` |
+| Commit | `ap2:{sha256(transaction_id)[:32]}:commit` |
+| Release | `ap2:{sha256(transaction_id)[:32]}:release:{ExcType}` |
 
-Keys are truncated to 256 chars and sanitized to alphanumeric + `_-.` per protocol header rules.
+The transaction_id is hashed (SHA-256, first 32 hex chars — 128 bits of collision resistance) so the key is fixed-length, header-safe, and the phase suffix is always preserved regardless of how long the upstream id is. The raw `transaction_id` is still attached to `Subject.dimensions["ap2_transaction_id"]` for debug/audit.
 
 ## Runtime authority receipt
 
@@ -164,8 +165,10 @@ Exception hierarchy:
 |---|---|
 | `AP2GuardError` | Base for all AP2-guard errors |
 | `AP2GuardDenied` | Cycles returned `DENY` or the reserve POST failed |
+| `AP2DryRunResult` | Raised from `__enter__` when `dry_run=True` — carries the decision payload; the `with` body never executes |
+| `AP2GuardCommitFailed` | Commit was rejected with an unrecognized code after the body ran; reservation has been released, PSP state may need reconciliation |
 | `AP2CurrencyError` | Non-USD mandate in v0.1 (subclass of `ValueError`) |
-| `AP2MandateError` | Adapter input is malformed (subclass of `ValueError`) |
+| `AP2MandateError` | Adapter input is malformed — NaN, infinity, sub-micro precision, missing payee, etc. (subclass of `ValueError`) |
 
 ## Features
 
