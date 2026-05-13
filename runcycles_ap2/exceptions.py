@@ -117,8 +117,9 @@ class AP2GuardCommitFailed(AP2GuardError):
     This is NOT the right exception for unknown-outcome failures. Anything where the
     commit POST might have reached and mutated Cycles before the failure — transport
     errors, 5xx, terminal reservation statuses (``RESERVATION_FINALIZED`` /
-    ``RESERVATION_EXPIRED`` / ``IDEMPOTENCY_MISMATCH``), and uncaught exceptions —
-    is raised as :class:`AP2GuardCommitUncertain` with **no auto-release**.
+    ``RESERVATION_EXPIRED`` / ``IDEMPOTENCY_MISMATCH``), uncaught exceptions, and
+    (async only) ``asyncio.CancelledError`` mid-flight — is raised as
+    :class:`AP2GuardCommitUncertain` with **no auto-release**.
     """
 
     def __init__(

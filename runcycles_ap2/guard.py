@@ -480,9 +480,13 @@ class AsyncGuardedPayment:
       - ``dry_run=True`` → raises :class:`AP2DryRunResult` from ``__aenter__`` so the
         ``async with`` body never executes (a body-level PSP call would otherwise move
         money with no Cycles record).
-      - Post-PSP commit unknown-outcome (terminal codes, transport, 5xx, uncaught) →
-        raises :class:`AP2GuardCommitUncertain`. **No auto-release** — the commit POST
-        may have reached and settled Cycles before the failure was observed.
+      - Post-PSP commit unknown-outcome (terminal codes, transport, 5xx, uncaught
+        exception, or an ``asyncio.CancelledError`` landing mid-flight) → raises
+        :class:`AP2GuardCommitUncertain`. **No auto-release** — the commit POST may
+        have reached and settled Cycles before the failure was observed. The
+        cancellation path is async-only and surfaces as
+        ``error_code="COMMIT_CANCELLED"`` with the original ``CancelledError``
+        chained via ``__cause__``.
       - Commit rejected with unrecognized 4xx code → raises
         :class:`AP2GuardCommitFailed` after attempting a release; check the exception's
         ``released`` / ``release_error`` attributes to know whether budget was recovered.
