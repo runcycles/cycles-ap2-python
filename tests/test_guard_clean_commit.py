@@ -108,6 +108,22 @@ class TestCleanCommit:
             with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as guard:
                 guard.set_actual_micros(-1)
 
+    @pytest.mark.parametrize("bad", [True, False, 1.5, 1.0, "100", None, [100]])
+    def test_set_actual_micros_rejects_non_int_types(self, mock_client, mandate, bad) -> None:
+        # P2 regression: bool is a subclass of int and float compares numerically, so
+        # the bound check passes for True/1.5 and the value would flow to the wire.
+        # set_actual_micros must reject anything that isn't a plain int up front.
+        from tests.conftest import release_success_response
+
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.release_reservation.return_value = release_success_response()
+
+        with pytest.raises(AP2MandateError, match="must be an int"):
+            with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as guard:
+                guard.set_actual_micros(bad)  # type: ignore[arg-type]
+
+        mock_client.commit_reservation.assert_not_called()
+
     def test_reserve_body_carries_policy_keys(self, mock_client, mandate) -> None:
         mock_client.create_reservation.return_value = allow_response()
         mock_client.commit_reservation.return_value = commit_success_response()

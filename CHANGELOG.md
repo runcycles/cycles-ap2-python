@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exact integer-tuple conversion in `amount_micros()` — does not depend on the default decimal context, so large valid inputs convert exactly instead of being silently rounded.
 - Pre-allocation digit-count cap (≤ 19 integer digits, the int64 USD_MICROCENTS ceiling) blocks exponent-notation DoS like `Decimal("1E+1000000000000")` that would otherwise hang allocating a trillion-digit scaling factor.
 - Post-conversion int64 boundary check (`micros <= 2**63 - 1`) rejects amounts one over int64.max client-side instead of relying on the server. Applied symmetrically to `AP2Mandate.amount_micros()` and `GuardedPayment.set_actual_micros()` so a caller-supplied commit override cannot bypass the cap.
-- `set_actual_micros()` raises `AP2MandateError` (a `ValueError` subclass) for both negative and over-int64 inputs.
-- 75 tests, ≥ 95% coverage, ruff + mypy strict.
+- `set_actual_micros()` raises `AP2MandateError` (a `ValueError` subclass) for both negative and over-int64 inputs, plus any non-int type (notably `bool` and `float`, which numerical comparisons would otherwise let slip through).
+- Direct callers of `mapping.build_commit_body(actual_micros=...)` get the same input validation via a shared private validator.
+- 90 tests, ≥ 95% coverage, ruff + mypy strict.
 
 ### Planned for v0.2
 - `AsyncGuardedPayment` (asyncio).

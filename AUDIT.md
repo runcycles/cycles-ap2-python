@@ -2,6 +2,19 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — sixth-round review fix (P2 non-int amount types)
+
+**Author:** code-review response on PR #1 (round 6)
+**Scope:** correctness — exact-type validation on commit-amount inputs
+
+**[P2] `set_actual_micros` and `build_commit_body` accepted non-int types** — the round-5 fix bounded numerical comparisons, but `bool` is an `int` subclass (`isinstance(True, int) is True`) and `float < int` compares numerically. `set_actual_micros(True)` would ship `true` as `actual.amount`; `set_actual_micros(1.5)` would ship `1.5` and only surface as a pydantic error during receipt construction — *after* the commit POST had already gone out. **Fix:** new private `runcycles_ap2._validation.validate_micros(amount, *, field)` helper using `type(amount) is int` to reject `bool` (and everything else non-int). Wired into both `GuardedPayment.set_actual_micros` AND `mapping.build_commit_body` so direct callers of the builder get the same protection. 14 new tests cover `True`/`False`/`1.5`/`1.0`/`"100"`/`None`/`[100]` across both entry points.
+
+**Test posture after fix:**
+- 90 tests (up from 75), 98.29% coverage.
+
+**New internal module:**
+- `runcycles_ap2/_validation.py` (private; not exported)
+
 ## 2026-05-13 — fifth-round review fix (P2 bypass via set_actual_micros)
 
 **Author:** code-review response on PR #1 (round 5)

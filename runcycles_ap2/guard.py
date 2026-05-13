@@ -10,8 +10,9 @@ from typing import Any
 from runcycles.client import CyclesClient
 from runcycles.models import Decision, ReservationCreateResponse
 
-from runcycles_ap2._constants import DEFAULT_ACTION_KIND, DEFAULT_OVERAGE_POLICY, DEFAULT_TTL_MS, MAX_USD_MICROS
-from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardDenied, AP2MandateError
+from runcycles_ap2._constants import DEFAULT_ACTION_KIND, DEFAULT_OVERAGE_POLICY, DEFAULT_TTL_MS
+from runcycles_ap2._validation import validate_micros
+from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardDenied
 from runcycles_ap2.mapping import (
     build_action,
     build_commit_body,
@@ -110,15 +111,12 @@ class GuardedPayment:
     def set_actual_micros(self, amount: int) -> None:
         """Override the committed amount. Defaults to ``mandate.amount_micros()``.
 
-        The override must respect the same int64 ceiling that ``AP2Mandate.amount_micros``
-        enforces — otherwise a caller could bypass the cap on the commit path and ship
-        an out-of-range value the server is guaranteed to reject.
+        Raises :class:`AP2MandateError` if ``amount`` is not a plain ``int`` (``bool``
+        and ``float`` are explicitly rejected — they would otherwise reach the wire
+        payload and only surface as a post-commit pydantic failure during receipt
+        construction), is negative, or exceeds the int64 USD_MICROCENTS ceiling.
         """
-        if amount < 0:
-            raise AP2MandateError("actual amount must be non-negative")
-        if amount > MAX_USD_MICROS:
-            raise AP2MandateError(f"actual amount {amount} exceeds int64 USD micro-cent max ({MAX_USD_MICROS})")
-        self._actual_micros = amount
+        self._actual_micros = validate_micros(amount, field="actual amount")
 
     def attach_receipt_fields(self, **fields: Any) -> None:
         """Attach caller-supplied fields (e.g. PSP reference id) to the commit metadata."""

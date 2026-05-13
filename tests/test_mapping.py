@@ -380,6 +380,22 @@ class TestBuildCommitBody:
         body = build_commit_body(make_mandate(), metadata={"psp_ref": "psp_1"})
         assert body["metadata"]["psp_ref"] == "psp_1"
 
+    @pytest.mark.parametrize("bad", [True, False, 1.5, 1.0, "100", [100]])
+    def test_actual_micros_rejects_non_int_types(self, bad) -> None:
+        # P2 regression: build_commit_body is called directly by some callers (and by
+        # the guard); it must reject bool/float/str up front rather than letting the
+        # bad value reach the wire and only fail at receipt-construction time.
+        with pytest.raises(AP2MandateError, match="must be an int"):
+            build_commit_body(make_mandate(), actual_micros=bad)
+
+    def test_actual_micros_negative_rejected(self) -> None:
+        with pytest.raises(AP2MandateError, match="non-negative"):
+            build_commit_body(make_mandate(), actual_micros=-1)
+
+    def test_actual_micros_above_int64_rejected(self) -> None:
+        with pytest.raises(AP2MandateError, match="int64"):
+            build_commit_body(make_mandate(), actual_micros=2**63)
+
 
 class TestBuildReleaseBody:
     def test_with_exception_type(self) -> None:

@@ -21,6 +21,7 @@ from runcycles_ap2._constants import (
     IDEMPOTENCY_PREFIX,
     TRANSACTION_ID_HASH_LEN,
 )
+from runcycles_ap2._validation import validate_micros
 from runcycles_ap2.models import AP2Mandate
 
 
@@ -173,8 +174,16 @@ def build_commit_body(
     actual_micros: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Commit body with deterministic idempotency key derived from ``transaction_id``."""
-    amount = actual_micros if actual_micros is not None else mandate.amount_micros()
+    """Commit body with deterministic idempotency key derived from ``transaction_id``.
+
+    ``actual_micros`` is validated when supplied (rejects ``bool``, ``float``, and
+    out-of-range ints) so direct callers of this builder get the same protection as
+    :meth:`GuardedPayment.set_actual_micros`.
+    """
+    if actual_micros is None:
+        amount = mandate.amount_micros()
+    else:
+        amount = validate_micros(actual_micros, field="actual_micros")
     body: dict[str, Any] = {
         "idempotency_key": idempotency_key(mandate.transaction_id, "commit"),
         "actual": {"unit": "USD_MICROCENTS", "amount": amount},
