@@ -12,7 +12,6 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from runcycles_ap2._constants import USD_MICROCENTS_PER_DOLLAR
 from runcycles_ap2.exceptions import AP2CurrencyError, AP2MandateError
 
 # USD_MICROCENTS is 10^-8 USD; anything finer than 8 decimal places in the source string
@@ -60,19 +59,35 @@ class AP2Mandate(BaseModel):
         # `as_tuple().exponent` is the negative of the number of decimal places for
         # finite values (e.g. "1.234" → exponent -3). It can also be a string sentinel
         # ("n", "N", "F") for NaN/Infinity, but is_finite() above rules those out.
-        exponent = value.as_tuple().exponent
-        if isinstance(exponent, int) and exponent < -_MAX_DECIMAL_PLACES:
+        sign, digits, exponent = value.as_tuple()
+        if not isinstance(exponent, int):
+            # Defensive: is_finite() should have caught this, but the Decimal API permits
+            # special exponent sentinels on inputs we treat as out-of-domain.
+            raise AP2MandateError(f"amount_value {self.amount_value!r} is not a finite decimal")
+        if exponent < -_MAX_DECIMAL_PLACES:
             raise AP2MandateError(
                 f"amount_value {self.amount_value!r} has more than {_MAX_DECIMAL_PLACES} decimal places; "
                 "sub-micro precision would be lost"
             )
-        try:
-            scaled = value * USD_MICROCENTS_PER_DOLLAR
-            return int(scaled.to_integral_value())
-        except (DecimalException, OverflowError, ValueError) as exc:
-            raise AP2MandateError(
-                f"amount_value {self.amount_value!r} could not be converted to USD micro-cents"
-            ) from exc
+
+        # Exact integer conversion via `as_tuple()`. We deliberately do NOT compute
+        # `value * 10**8` as Decimals: that uses the default 28-digit decimal context
+        # and silently rounds inputs larger than the protocol cap (which a malformed
+        # mandate could carry). Working off `digits` is unconditional — any input
+        # that survived the validation above produces an exact int.
+        if sign:
+            # Negative was already rejected above; keep the branch for defensive clarity.
+            raise AP2MandateError("amount_value must be non-negative")
+        int_value = 0
+        for d in digits:
+            int_value = int_value * 10 + d
+        # `value` equals int_value * 10**exponent, so micros = int_value * 10**(exponent+8).
+        # `exponent + _MAX_DECIMAL_PLACES` is always >= 0 here because the validation
+        # above rejected `exponent < -_MAX_DECIMAL_PLACES`. The cast keeps mypy happy
+        # (negative-exponent int.__pow__ widens to float).
+        shift = exponent + _MAX_DECIMAL_PLACES
+        scale: int = int(10**shift)
+        return int_value * scale
 
     @classmethod
     def from_ap2(

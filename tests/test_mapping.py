@@ -215,6 +215,23 @@ class TestAmountMicros:
         # 1.12345678 * 1e8 = 112345678 micro-cents — exact, no precision loss.
         assert m.amount_micros() == 112_345_678
 
+    def test_large_value_converts_exactly(self) -> None:
+        # P2 regression: the previous Decimal-multiplication path used the default
+        # 28-digit context and silently rounded large inputs. The integer-tuple path
+        # is unconditional — any validated input converts exactly regardless of size.
+        m = AP2Mandate(
+            transaction_id="tx",
+            amount_value="123456789012345678901.12345678",
+            currency="USD",
+            payee_website="x.example",
+        )
+        # 21 integer digits + 8 fractional, * 1e8 → exactly 29 digits.
+        assert m.amount_micros() == 12_345_678_901_234_567_890_112_345_678
+
+    def test_integer_value_converts_exactly(self) -> None:
+        m = AP2Mandate(transaction_id="tx", amount_value="100", currency="USD", payee_website="x.example")
+        assert m.amount_micros() == 10_000_000_000
+
 
 class TestBuildReservationBody:
     def test_full_shape(self) -> None:

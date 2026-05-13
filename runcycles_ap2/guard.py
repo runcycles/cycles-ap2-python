@@ -259,38 +259,61 @@ class GuardedPayment:
             self._mandate.transaction_id,
             error_code,
         )
-        self._handle_release(
+        released, release_error = self._handle_release(
             reason=f"ap2_commit_rejected:{error_code or 'UNKNOWN'}",
             exc_name="CommitRejected",
         )
+        status_phrase = (
+            "reservation released"
+            if released
+            else f"reservation release FAILED ({release_error or 'unknown'}); budget stranded until TTL"
+        )
         raise AP2GuardCommitFailed(
             f"AP2 commit rejected for transaction {self._mandate.transaction_id} "
-            f"(code={error_code}); reservation released. PSP state may need reconciliation.",
+            f"(code={error_code}); {status_phrase}. PSP state may need reconciliation.",
             error_code=error_code,
             request_id=request_id,
             reservation_id=self._reservation_id,
+            released=released,
+            release_error=release_error,
         )
 
-    def _handle_release(self, *, reason: str, exc_name: str) -> None:
+    def _handle_release(self, *, reason: str, exc_name: str) -> tuple[bool, str | None]:
+        """Release the reservation. Returns ``(success, error_description)``.
+
+        ``success`` is True only when the server returned a 2xx for the release. Any
+        non-success response or raised transport error sets ``success=False`` and
+        carries a short error description so the caller can surface it to operators.
+        """
         assert self._reservation_id is not None
         body = build_release_body(self._mandate, reason=reason, exception_type=exc_name)
         try:
             response = self._client.release_reservation(self._reservation_id, body)
-            if response.is_success:
-                logger.info(
-                    "AP2 released: id=%s, tx=%s, reason=%s",
-                    self._reservation_id,
-                    self._mandate.transaction_id,
-                    reason,
-                )
-            else:
-                logger.warning(
-                    "AP2 release returned non-success: id=%s, status=%d",
-                    self._reservation_id,
-                    response.status,
-                )
-        except Exception:
+        except Exception as exc:
             logger.exception("AP2 release raised: id=%s", self._reservation_id)
+            return False, f"{type(exc).__name__}: {exc}"
+
+        if response.is_success:
+            logger.info(
+                "AP2 released: id=%s, tx=%s, reason=%s",
+                self._reservation_id,
+                self._mandate.transaction_id,
+                reason,
+            )
+            return True, None
+
+        error = response.get_error_response()
+        error_code = error.error_code.value if (error and error.error_code) else None
+        logger.warning(
+            "AP2 release returned non-success: id=%s, status=%d, code=%s",
+            self._reservation_id,
+            response.status,
+            error_code,
+        )
+        detail = f"status={response.status}"
+        if error_code:
+            detail = f"{detail}, code={error_code}"
+        return False, detail
 
     def _build_receipt(self) -> None:
         assert self._reservation_id is not None

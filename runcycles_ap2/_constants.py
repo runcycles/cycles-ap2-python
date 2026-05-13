@@ -36,6 +36,3 @@ IDEMPOTENCY_PREFIX: Final[str] = "ap2"
 # protocol cap, so the phase suffix (`reserve`/`commit`/`release:{ExcType}`) is always
 # preserved — which is what protects the consume-once defense.
 TRANSACTION_ID_HASH_LEN: Final[int] = 32
-
-# USD micro-cents conversion (1 USD == 1e8 micro-cents).
-USD_MICROCENTS_PER_DOLLAR: Final[int] = 100_000_000

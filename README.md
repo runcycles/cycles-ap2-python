@@ -73,15 +73,14 @@ Required upstream attributes: `payment_mandate.transaction_id`, `payment_mandate
 
 | Scenario | Outcome | Detail |
 |---|---|---|
-| `Decision.ALLOW`, body completes | **Commit** | Server idempotency key `ap2:{transaction_id}:commit` |
-| `Decision.ALLOW`, body raises | **Release** | Reason `ap2_guard_failed:{ExcType}`, key `ap2:{transaction_id}:release:{ExcType}` |
+| `Decision.ALLOW`, body completes | **Commit** | Server idempotency key derived from `transaction_id` — see *Deterministic idempotency keys* below |
+| `Decision.ALLOW`, body raises | **Release** | Reason `ap2_guard_failed:{ExcType}`, idempotency key includes the exception type |
 | `Decision.DENY` | **Neither** | `AP2GuardDenied` raised in `__enter__`; real money never moves |
 | HTTP / transport error on reserve | **Neither** | `AP2GuardDenied` raised; caller can retry — same `transaction_id` ⇒ same reserve key |
 | Commit returns `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` | **Neither** | Logged at warning; we never auto-release after these (a previous commit may already have charged) |
-| Commit returns other 4xx | **Release** | Reason `ap2_commit_rejected:{code}` |
+| Commit returns other 4xx | **Release + raise** | Reservation release attempted; `AP2GuardCommitFailed` raised with `released` + `release_error` so the caller cannot miss the reconciliation event |
 | `guard.abort(reason)` called inside `with` | **Release** | Reason `ap2_guard_aborted:{reason}` |
 | `dry_run=True` | **Neither** | `__enter__` raises `AP2DryRunResult` carrying the decision payload — the `with` body never runs, so a real PSP call cannot leak under a dry-run probe |
-| Commit rejected with unrecognized code | **Release + raise** | Reservation released; `AP2GuardCommitFailed` raised so the caller cannot miss the reconciliation event |
 
 `AP2GuardDenied` carries `reason_code` and `request_id` for upstream logging.
 
@@ -166,7 +165,7 @@ Exception hierarchy:
 | `AP2GuardError` | Base for all AP2-guard errors |
 | `AP2GuardDenied` | Cycles returned `DENY` or the reserve POST failed |
 | `AP2DryRunResult` | Raised from `__enter__` when `dry_run=True` — carries the decision payload; the `with` body never executes |
-| `AP2GuardCommitFailed` | Commit was rejected with an unrecognized code after the body ran; reservation has been released, PSP state may need reconciliation |
+| `AP2GuardCommitFailed` | Commit was rejected with an unrecognized code after the body ran. Check `.released` (bool) and `.release_error` (string \| None) on the exception — `released=False` means budget is stranded until TTL; reconcile with PSP either way |
 | `AP2CurrencyError` | Non-USD mandate in v0.1 (subclass of `ValueError`) |
 | `AP2MandateError` | Adapter input is malformed — NaN, infinity, sub-micro precision, missing payee, etc. (subclass of `ValueError`) |
 

@@ -55,10 +55,16 @@ class AP2DryRunResult(AP2GuardError):
 class AP2GuardCommitFailed(AP2GuardError):
     """Cycles rejected the commit AFTER the body ran (PSP may already have charged).
 
-    The reservation has been released to prevent stranding budget, but the caller MUST
-    treat this as a reconciliation event: payment state on the PSP side may be out of
-    sync with Cycles' view. We raise instead of returning silently so the caller cannot
-    miss the condition.
+    The wrapper attempts to release the reservation to recover budget; whether that
+    release succeeded is reported via :attr:`released`. The caller MUST treat this as
+    a reconciliation event regardless: PSP state and Cycles' view of the budget can
+    be out of sync.
+
+    - ``released = True``: budget was returned, but PSP-side capture may still need
+      reconciliation against your books.
+    - ``released = False``: budget is stranded inside the reservation until TTL expiry
+      (server-side rollback) AND PSP-side capture may need reconciliation. This is
+      the worst case — escalate.
 
     This exception is NOT raised for ``RESERVATION_FINALIZED`` / ``RESERVATION_EXPIRED``
     / ``IDEMPOTENCY_MISMATCH`` — those indicate a prior attempt already finalized the
@@ -72,11 +78,15 @@ class AP2GuardCommitFailed(AP2GuardError):
         error_code: str | None = None,
         request_id: str | None = None,
         reservation_id: str | None = None,
+        released: bool = False,
+        release_error: str | None = None,
     ) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.request_id = request_id
         self.reservation_id = reservation_id
+        self.released = released
+        self.release_error = release_error
 
 
 class AP2CurrencyError(AP2GuardError, ValueError):
