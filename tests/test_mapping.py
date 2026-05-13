@@ -269,6 +269,42 @@ class TestAmountMicros:
         with pytest.raises(AP2MandateError, match="int64"):
             m.amount_micros()
 
+    def test_int64_max_exact_accepted(self) -> None:
+        # Exact int64.max in USD_MICROCENTS — must still be accepted.
+        m = AP2Mandate(
+            transaction_id="tx",
+            amount_value="92233720368.54775807",
+            currency="USD",
+            payee_website="x.example",
+        )
+        assert m.amount_micros() == 9_223_372_036_854_775_807
+
+    def test_int64_max_plus_one_rejected(self) -> None:
+        # P2 regression: the 19-digit cap permits this (also 19 digits), so the
+        # post-conversion int64 check is what catches it. Previous versions would
+        # have shipped 9_223_372_036_854_775_808 to the server.
+        m = AP2Mandate(
+            transaction_id="tx",
+            amount_value="92233720368.54775808",
+            currency="USD",
+            payee_website="x.example",
+        )
+        with pytest.raises(AP2MandateError, match="int64"):
+            m.amount_micros()
+
+    def test_19_digit_amount_above_int64_rejected(self) -> None:
+        # P2 regression: 11 integer 9s + 8 fractional 9s == 19 total digits — within
+        # the digit cap, but the resulting micros (9_999_999_999_999_999_999 ≈ 1e19)
+        # exceed int64.max (≈ 9.22e18). The post-conversion check rejects it.
+        m = AP2Mandate(
+            transaction_id="tx",
+            amount_value="99999999999.99999999",
+            currency="USD",
+            payee_website="x.example",
+        )
+        with pytest.raises(AP2MandateError, match="int64"):
+            m.amount_micros()
+
 
 class TestBuildReservationBody:
     def test_full_shape(self) -> None:

@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - USD-only enforcement; non-USD raises `AP2CurrencyError`. Rejects NaN, +/-Infinity, and amounts with more than 8 decimal places (sub-micro precision); wraps all `decimal` failures as `AP2MandateError`.
 - Exact integer-tuple conversion in `amount_micros()` — does not depend on the default decimal context, so large valid inputs convert exactly instead of being silently rounded.
 - Pre-allocation digit-count cap (≤ 19 integer digits, the int64 USD_MICROCENTS ceiling) blocks exponent-notation DoS like `Decimal("1E+1000000000000")` that would otherwise hang allocating a trillion-digit scaling factor.
-- 69 tests, ≥ 95% coverage, ruff + mypy strict.
+- Post-conversion int64 boundary check (`micros <= 2**63 - 1`) rejects amounts one over int64.max client-side instead of relying on the server.
+- 72 tests, ≥ 95% coverage, ruff + mypy strict.
 
 ### Planned for v0.2
 - `AsyncGuardedPayment` (asyncio).

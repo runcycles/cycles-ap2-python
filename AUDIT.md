@@ -2,6 +2,18 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — fourth-round review fix (P2 exact int64 boundary)
+
+**Author:** code-review response on PR #1 (round 4)
+**Scope:** correctness at the int64 boundary
+
+**[P2] 19-digit cap permits values one over int64.max** — the round-3 fix bounded `len(digits) + max(0, exponent)` to 19 to block the DoS allocation. That cap correctly rejects 20-digit inputs but lets values like `92233720368.54775808` (int64.max + 1) and `99999999999.99999999` (≈ 10^19 micros) slip through. The server would reject them, but client-side we'd already have shipped the wrong number. **Fix:** add a post-conversion check `micros <= 2**63 - 1` (`_MAX_USD_MICROS = 9_223_372_036_854_775_807`). The 19-digit cap remains as the pre-allocation DoS guard; the post-conversion check is the exact protocol boundary. Three regression tests added: int64.max is accepted, int64.max + 1 is rejected, 19-digit-with-fractional `99999999999.99999999` is rejected.
+
+**Test posture after fix:**
+- 72 tests (up from 69), 97.92% coverage.
+
+No public API additions.
+
 ## 2026-05-13 — third-round review fixes (P2 DoS + P3 stale docs)
 
 **Author:** code-review response on PR #1 (round 3)
