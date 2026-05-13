@@ -36,3 +36,8 @@ IDEMPOTENCY_PREFIX: Final[str] = "ap2"
 # protocol cap, so the phase suffix (`reserve`/`commit`/`release:{ExcType}`) is always
 # preserved — which is what protects the consume-once defense.
 TRANSACTION_ID_HASH_LEN: Final[int] = 32
+
+# Cycles `Amount.amount` is int64. Both mandate-derived amounts (`AP2Mandate.amount_micros`)
+# and caller-supplied overrides (`GuardedPayment.set_actual_micros`) must respect this
+# ceiling — otherwise we'd ship an out-of-range value the server is guaranteed to reject.
+MAX_USD_MICROS: Final[int] = 2**63 - 1  # 9_223_372_036_854_775_807

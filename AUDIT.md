@@ -2,6 +2,19 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — fifth-round review fix (P2 bypass via set_actual_micros)
+
+**Author:** code-review response on PR #1 (round 5)
+**Scope:** correctness — int64 cap on the commit-path override
+
+**[P2] `set_actual_micros()` bypassed the int64 ceiling** — round 4 added the int64 cap to `AP2Mandate.amount_micros()`, but the caller-supplied commit override on `GuardedPayment.set_actual_micros()` only rejected negative values. Passing `2**63` flowed through to `build_commit_body` and into the wire payload as `actual.amount = 9223372036854775808`. **Fix:** mirror the same `0 <= amount <= MAX_USD_MICROS` validation; raise `AP2MandateError` (was plain `ValueError`) so all amount-validation errors are reachable via one exception type. Extracted `MAX_USD_MICROS = 2**63 - 1` to `_constants.py` as the shared source of truth between `models.py` and `guard.py`. Three regression tests cover int64.max acceptance, int64.max + 1 rejection (commit not called, release called), and the existing negative-amount path now raising `AP2MandateError`.
+
+**Test posture after fix:**
+- 75 tests (up from 72), 98.23% coverage.
+
+**Public API change (very minor):**
+- `set_actual_micros(amount)` now raises `AP2MandateError` (a `ValueError` subclass) instead of plain `ValueError`. Code catching `ValueError` still works.
+
 ## 2026-05-13 — fourth-round review fix (P2 exact int64 boundary)
 
 **Author:** code-review response on PR #1 (round 4)

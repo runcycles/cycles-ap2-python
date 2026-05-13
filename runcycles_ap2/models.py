@@ -12,6 +12,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from runcycles_ap2._constants import MAX_USD_MICROS
 from runcycles_ap2.exceptions import AP2CurrencyError, AP2MandateError
 
 # USD_MICROCENTS is 10^-8 USD; anything finer than 8 decimal places in the source string
@@ -23,9 +24,8 @@ _MAX_DECIMAL_PLACES = 8
 # any `10**shift` math — otherwise a short string like "1E+1000000000000" (a finite Decimal
 # with a 10^12 exponent) would allocate a trillion-digit integer and hang the process.
 # The digit cap is a coarse pre-allocation guard; the precise int64 boundary is enforced
-# AFTER conversion via `_MAX_USD_MICROS`.
+# AFTER conversion via `MAX_USD_MICROS`.
 _MAX_INTEGER_DIGITS = 19
-_MAX_USD_MICROS = 2**63 - 1  # 9_223_372_036_854_775_807 — Cycles Amount.amount int64 ceiling
 
 _CONFIG = ConfigDict(populate_by_name=True, extra="forbid", str_strip_whitespace=True)
 
@@ -118,9 +118,9 @@ class AP2Mandate(BaseModel):
         # one over int64.max (e.g. "92233720368.54775808" → 9_223_372_036_854_775_808).
         # Enforce the exact protocol ceiling here so we fail-fast client-side rather
         # than waiting for the server to reject.
-        if micros > _MAX_USD_MICROS:
+        if micros > MAX_USD_MICROS:
             raise AP2MandateError(
-                f"amount_value {self.amount_value!r} exceeds int64 USD micro-cent max ({micros} > {_MAX_USD_MICROS})"
+                f"amount_value {self.amount_value!r} exceeds int64 USD micro-cent max ({micros} > {MAX_USD_MICROS})"
             )
         return micros
 

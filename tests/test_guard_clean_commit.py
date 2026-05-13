@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from runcycles_ap2 import cycles_guard_payment
+import pytest
+
+from runcycles_ap2 import AP2MandateError, cycles_guard_payment
+from runcycles_ap2._constants import MAX_USD_MICROS
 from runcycles_ap2.mapping import idempotency_key
 from tests.conftest import allow_response, commit_success_response
 
@@ -66,6 +69,44 @@ class TestCleanCommit:
 
         assert guard.receipt is None
         assert guard.committed is True
+
+    def test_set_actual_micros_at_int64_max_accepted(self, mock_client, mandate) -> None:
+        # Boundary: int64.max is a legal commit amount.
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.return_value = commit_success_response()
+
+        with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as guard:
+            guard.set_actual_micros(MAX_USD_MICROS)
+
+        body = mock_client.commit_reservation.call_args[0][1]
+        assert body["actual"]["amount"] == MAX_USD_MICROS
+
+    def test_set_actual_micros_above_int64_rejected(self, mock_client, mandate) -> None:
+        # P2 regression: AP2Mandate.amount_micros enforces the int64 cap on
+        # mandate-derived amounts, but set_actual_micros() used to only reject
+        # negatives. A caller could pass 2**63 and we'd ship it.
+        from tests.conftest import release_success_response
+
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.release_reservation.return_value = release_success_response()
+
+        with pytest.raises(AP2MandateError, match="int64"):
+            with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as guard:
+                guard.set_actual_micros(MAX_USD_MICROS + 1)
+
+        # Raise inside the body → release on exit, no commit.
+        mock_client.commit_reservation.assert_not_called()
+        mock_client.release_reservation.assert_called_once()
+
+    def test_set_actual_micros_negative_rejected(self, mock_client, mandate) -> None:
+        from tests.conftest import release_success_response
+
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.release_reservation.return_value = release_success_response()
+
+        with pytest.raises(AP2MandateError, match="non-negative"):
+            with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as guard:
+                guard.set_actual_micros(-1)
 
     def test_reserve_body_carries_policy_keys(self, mock_client, mandate) -> None:
         mock_client.create_reservation.return_value = allow_response()

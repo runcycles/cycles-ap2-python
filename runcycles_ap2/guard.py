@@ -10,8 +10,8 @@ from typing import Any
 from runcycles.client import CyclesClient
 from runcycles.models import Decision, ReservationCreateResponse
 
-from runcycles_ap2._constants import DEFAULT_ACTION_KIND, DEFAULT_OVERAGE_POLICY, DEFAULT_TTL_MS
-from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardDenied
+from runcycles_ap2._constants import DEFAULT_ACTION_KIND, DEFAULT_OVERAGE_POLICY, DEFAULT_TTL_MS, MAX_USD_MICROS
+from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardDenied, AP2MandateError
 from runcycles_ap2.mapping import (
     build_action,
     build_commit_body,
@@ -108,9 +108,16 @@ class GuardedPayment:
         return self._committed
 
     def set_actual_micros(self, amount: int) -> None:
-        """Override the committed amount. Defaults to ``mandate.amount_micros()``."""
+        """Override the committed amount. Defaults to ``mandate.amount_micros()``.
+
+        The override must respect the same int64 ceiling that ``AP2Mandate.amount_micros``
+        enforces — otherwise a caller could bypass the cap on the commit path and ship
+        an out-of-range value the server is guaranteed to reject.
+        """
         if amount < 0:
-            raise ValueError("actual amount must be non-negative")
+            raise AP2MandateError("actual amount must be non-negative")
+        if amount > MAX_USD_MICROS:
+            raise AP2MandateError(f"actual amount {amount} exceeds int64 USD micro-cent max ({MAX_USD_MICROS})")
         self._actual_micros = amount
 
     def attach_receipt_fields(self, **fields: Any) -> None:
