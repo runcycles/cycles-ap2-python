@@ -105,8 +105,10 @@ class TestIdempotencyKeyOpenMandateScope:
     """P0-A: when ``open_mandate_hash`` is present, the lock scope shifts to it.
 
     This is the AP2-spec consume-once boundary for human-not-present flows: every
-    checkout derived from the same open mandate must collapse onto one reservation,
-    even when their transaction_ids differ.
+    checkout derived from the same open mandate lands in one ``(tenant, endpoint,
+    idempotency_key)`` bucket. Identical payloads replay the original reservation;
+    divergent payloads are rejected with ``IDEMPOTENCY_MISMATCH``. Either way, no
+    second valid reservation — even when the transaction_ids differ.
     """
 
     def test_open_mandate_scope_used_when_hash_present(self) -> None:

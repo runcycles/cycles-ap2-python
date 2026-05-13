@@ -33,11 +33,14 @@ IDEMPOTENCY_PREFIX: Final[str] = "ap2"
 
 # Scope namespace embedded in the idempotency key. The scope determines what counts as
 # "the same payment attempt" for server-side dedup:
-#   - "open_mandate": all checkouts derived from one open mandate collapse onto one
-#     reservation. This matches AP2's normative warning (specification §6) that a
-#     shopping agent must not present subsequent open mandates without a rejection
-#     receipt — without this scope, two transactions from one open mandate produce
-#     different transaction_ids and both would be authorized.
+#   - "open_mandate": all checkouts derived from one open mandate land in the same
+#     (tenant, endpoint, idempotency_key) bucket. Identical replays return the
+#     original reservation; divergent payloads are rejected with IDEMPOTENCY_MISMATCH.
+#     Either way, no second valid reservation. This matches AP2's normative warning
+#     (specification §6) that a shopping agent must not present subsequent open
+#     mandates without a rejection receipt — without this scope, two transactions
+#     from one open mandate produce different transaction_ids and both would be
+#     authorized.
 #   - "tx": one transaction_id == one payment attempt (the default for human-present
 #     and any flow without an open mandate).
 IDEMPOTENCY_SCOPE_OPEN_MANDATE: Final[str] = "open_mandate"

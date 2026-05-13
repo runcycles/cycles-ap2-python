@@ -48,11 +48,13 @@ def consume_once_input(mandate: AP2Mandate) -> tuple[str, str]:
     Returns ``(scope, raw_value)`` where:
       - ``scope == "open_mandate"`` and ``raw_value == mandate.open_mandate_hash`` when
         the mandate carries an open mandate hash. This makes every checkout derived from
-        the same open mandate collide on the same idempotency key — the server's
-        ``(tenant, endpoint, idempotency_key)`` dedup then collapses them onto one
-        reservation. **This is the AP2 spec's normative defense** against an autonomous
-        agent presenting subsequent open mandates without a rejection receipt
-        (specification §6).
+        the same open mandate collide on the same idempotency key — they all land in one
+        ``(tenant, endpoint, idempotency_key)`` bucket. Identical payloads replay the
+        original reservation; divergent payloads are rejected with
+        ``IDEMPOTENCY_MISMATCH``. Either way the second attempt cannot create a second
+        valid reservation. **This is the AP2 spec's normative defense** against an
+        autonomous agent presenting subsequent open mandates without a rejection
+        receipt (specification §6).
       - ``scope == "tx"`` and ``raw_value == mandate.transaction_id`` otherwise. One
         transaction == one payment attempt (the human-present / no-open-mandate case).
 
