@@ -8,13 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.0] — 2026-05-13
 
 ### Added
-- `AsyncGuardedPayment` and `cycles_guard_payment_async(...)` — async-context-manager variant for asyncio runtimes (FastAPI, anyio, OpenAI async SDK, etc.). Same exception contract, same idempotency-key derivation (including the open-mandate consume-once scope), and same commit-uncertainty handling as the sync `GuardedPayment`.
+- `AsyncGuardedPayment` and `cycles_guard_payment_async(...)` — async-context-manager variant for asyncio runtimes (FastAPI, anyio, OpenAI async SDK, etc.). Same exception classes as sync plus one async-only condition (cancellation mid-commit, see below). Same idempotency-key derivation (including the open-mandate consume-once scope) and same commit-uncertainty handling as the sync `GuardedPayment`.
 - New example `examples/ap2_human_not_present_async.py`.
 - README "Async variant (v0.2+)" quickstart snippet.
 - 37 tests in `tests/test_async_guard.py` mirroring the sync test surface (clean commit, dry-run, denial, release on exception, commit-uncertain branches incl. cancellation, commit-failed branches incl. release-failure recording, AP2 sample-type adapter end-to-end). Total 147 tests, 99.20% coverage. ruff + mypy strict.
 
+### Changed (async-only)
+- `AP2GuardCommitUncertain` gains one new `error_code` value, `"COMMIT_CANCELLED"`, raised when an `asyncio.CancelledError` lands while the async commit POST is in flight. The exception class itself is unchanged; only the set of `error_code` discriminators grew. Sync callers see no change.
+
 ### Unchanged
-- No wire-shape changes. No exception or validation changes. Existing v0.1.x sync callers see the API entirely unchanged.
+- No wire-shape changes. No validation changes. No sync API changes — existing v0.1.x sync callers see the API entirely unchanged.
 
 ### Still planned for v0.3
 - Multi-currency.
