@@ -2,6 +2,28 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — positioning-review round 3 (P0 transport/5xx routing + P1 bare-exception wrap)
+
+**Author:** strategic/positioning review round 3 (PR #2 still in-flight)
+**Scope:** completing the commit-uncertain contract for all post-PSP failure modes
+
+1. **[P0] Transport errors and 5xx responses on commit are now uncertain (no release)** — previously they fell into the "unrecognized rejection" branch, which called `_handle_release` and raised `AP2GuardCommitFailed` with the message "reservation released" regardless. Wrong: the commit POST may have reached Cycles and mutated state before the failure was observed, so auto-release risks undoing a successful settle. New branch ordering in `_handle_commit`: success → transport/5xx → terminal codes → 4xx unrecognized. The first three all raise `AP2GuardCommitUncertain` with no release; only 4xx-with-unrecognized-code still releases. Synthetic `error_code` values: `TRANSPORT_ERROR` for transport-level failures, `SERVER_ERROR` for 5xx without a parseable code (specific codes propagate when present).
+
+2. **[P1] Bare exceptions during commit POST now surface as commit-uncertain** — the `try / except Exception / raise` block re-raised the raw exception, losing the `reservation_id` and bypassing the reconciliation contract. Now wrapped as `AP2GuardCommitUncertain(error_code="COMMIT_RAISED", reservation_id=...) from exc` so the caller still gets the standard fields and the original exception is preserved via `__cause__`.
+
+3. **Docstring updated** — `AP2GuardCommitUncertain.__doc__` enumerates all the new conditions and how to distinguish them via `error_code`.
+
+**Test posture after fixes:**
+- 107 tests (up from 103), 99.18% coverage.
+
+**Four new regression tests:**
+- `test_commit_5xx_raises_uncertain_no_release`
+- `test_commit_5xx_without_body_uses_synthetic_code`
+- `test_commit_transport_error_raises_uncertain_no_release`
+- `test_commit_raises_exception_surfaces_as_uncertain`
+
+No public API additions; only behavior shift inside `_handle_commit` and an expanded contract on the existing `AP2GuardCommitUncertain`.
+
 ## 2026-05-13 — positioning-review follow-ups (wording accuracy + empty-hash guard)
 
 **Author:** strategic/positioning review round 2 (PR #2 in-flight)

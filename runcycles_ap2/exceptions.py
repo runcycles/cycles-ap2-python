@@ -53,21 +53,31 @@ class AP2DryRunResult(AP2GuardError):
 
 
 class AP2GuardCommitUncertain(AP2GuardError):
-    """Cycles returned a terminal status for this reservation on commit.
+    """The commit POST ran after the PSP body but the outcome is unknown.
 
-    Raised when the server replies with one of:
+    Raised when ANY of these conditions hits the commit phase — in every case the
+    server may have mutated state before the failure was observed, so auto-release
+    is unsafe (it could undo a successful settle):
+
       - ``RESERVATION_FINALIZED`` — a prior attempt already finalized the reservation;
         usually a benign replay, but we can't verify "matching actuals" client-side.
       - ``RESERVATION_EXPIRED`` — the TTL elapsed before we could commit. The server
-        reclaimed the budget on the cycles side, but the PSP body has already run, so
-        the payment may have moved without a Cycles settlement.
+        reclaimed the budget, but the PSP body already ran, so the payment may have
+        moved without a Cycles settlement.
       - ``IDEMPOTENCY_MISMATCH`` — a prior commit under this idempotency key carried
         a different payload (often: different actuals across retries).
+      - **Transport error** (``error_code="TRANSPORT_ERROR"``) — the commit POST
+        never got a response (connection lost, timeout, DNS failure, etc.). Cycles
+        may have received and applied the commit before the wire died.
+      - **5xx server error** (``error_code="SERVER_ERROR"`` or the specific code) —
+        the server failed *after* possibly mutating state.
+      - **Uncaught exception during commit** (``error_code="COMMIT_RAISED"``) — the
+        client code raised before a response was processed; the chained ``__cause__``
+        is the original exception. May or may not have reached the server.
 
-    After the PSP body has executed, any of these is a reconciliation event. We do
-    NOT auto-release for them (a previous successful commit would be undone). The
-    caller MUST handle this exception — silently returning would let unreconciled
-    payment state propagate.
+    The caller MUST handle this exception — silently returning would let
+    unreconciled payment state propagate. Use ``error_code`` to distinguish the
+    flavors if you want different reconciliation paths.
     """
 
     def __init__(

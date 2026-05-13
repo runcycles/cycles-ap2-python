@@ -110,7 +110,9 @@ class TestIdempotency:
         assert "FAILED" in str(ei.value) and "stranded" in str(ei.value)
 
     def test_commit_failed_records_release_non_success(self, mock_client, mandate) -> None:
-        # Same as above but the release POST returned a 5xx — server didn't release.
+        # Same as test_unrecognized_commit_error_releases_and_raises but the RELEASE
+        # POST (not the commit) returned a 5xx — server didn't release. The commit
+        # itself is still a 4xx unrecognized rejection (release-and-raise path).
         from runcycles_ap2 import AP2GuardCommitFailed
 
         mock_client.create_reservation.return_value = allow_response()
@@ -124,3 +126,74 @@ class TestIdempotency:
         assert ei.value.released is False
         assert ei.value.release_error is not None
         assert "500" in ei.value.release_error
+
+    def test_commit_5xx_raises_uncertain_no_release(self, mock_client, mandate) -> None:
+        # P0 regression: a 5xx on the commit POST itself means the server may have
+        # applied the commit before erroring. Releasing risks undoing a successful
+        # settle. Must raise AP2GuardCommitUncertain WITHOUT calling release.
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.return_value = commit_error_response("INTERNAL_ERROR", status=500)
+
+        with pytest.raises(AP2GuardCommitUncertain) as ei:
+            with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as _:
+                pass
+
+        # Specific 5xx error_code propagated from response body.
+        assert ei.value.error_code == "INTERNAL_ERROR"
+        assert ei.value.reservation_id == "rsv_ap2_001"
+        mock_client.release_reservation.assert_not_called()
+
+    def test_commit_5xx_without_body_uses_synthetic_code(self, mock_client, mandate) -> None:
+        # P0 regression: a 5xx with no parseable error body still raises uncertain;
+        # we synthesize error_code="SERVER_ERROR" so callers can branch on it.
+        from runcycles.response import CyclesResponse
+
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.return_value = CyclesResponse.http_error(
+            502,
+            error_message="bad gateway",
+            body=None,
+        )
+
+        with pytest.raises(AP2GuardCommitUncertain) as ei:
+            with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as _:
+                pass
+
+        assert ei.value.error_code == "SERVER_ERROR"
+        mock_client.release_reservation.assert_not_called()
+
+    def test_commit_transport_error_raises_uncertain_no_release(self, mock_client, mandate) -> None:
+        # P0 regression: a transport-level failure (CyclesResponse.transport_error,
+        # status=-1) means the POST never got a response. Cycles may have received and
+        # applied the commit before the wire died. Must raise uncertain, NO release.
+        from runcycles.response import CyclesResponse
+
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.return_value = CyclesResponse.transport_error(ConnectionError("network down"))
+
+        with pytest.raises(AP2GuardCommitUncertain) as ei:
+            with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as _:
+                pass
+
+        assert ei.value.error_code == "TRANSPORT_ERROR"
+        assert ei.value.reservation_id == "rsv_ap2_001"
+        mock_client.release_reservation.assert_not_called()
+
+    def test_commit_raises_exception_surfaces_as_uncertain(self, mock_client, mandate) -> None:
+        # P1 regression: if the client itself raises (e.g. a defect somewhere in the
+        # transport wrapper, or a programming error), the guard used to re-raise the
+        # raw exception — losing the reservation_id and bypassing the reconciliation
+        # contract. Now we wrap it as AP2GuardCommitUncertain with the original
+        # chained via __cause__ so the caller still gets the standard fields.
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.side_effect = ConnectionError("low-level boom")
+
+        with pytest.raises(AP2GuardCommitUncertain) as ei:
+            with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as _:
+                pass
+
+        assert ei.value.error_code == "COMMIT_RAISED"
+        assert ei.value.reservation_id == "rsv_ap2_001"
+        assert isinstance(ei.value.__cause__, ConnectionError)
+        assert "low-level boom" in str(ei.value.__cause__)
+        mock_client.release_reservation.assert_not_called()

@@ -101,8 +101,8 @@ Required upstream attributes (duck-typed): `payment_mandate.transaction_id`, `pa
 | `Decision.ALLOW`, body raises | **Release** | Reason `ap2_guard_failed:{ExcType}`, idempotency key includes the exception type |
 | `Decision.DENY` | **Neither** | `AP2GuardDenied` raised in `__enter__`; real money never moves |
 | HTTP / transport error on reserve | **Neither** | `AP2GuardDenied` raised; caller can retry — same `transaction_id` ⇒ same reserve key |
-| Commit returns `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` | **Raise, no release** | `AP2GuardCommitUncertain` raised so the caller cannot silently miss the reconciliation event; we don't auto-release (a prior commit may already have settled) |
-| Commit returns other 4xx | **Release + raise** | Reservation release attempted; `AP2GuardCommitFailed` raised with `released` + `release_error` so the caller cannot miss the reconciliation event |
+| Commit transport error / 5xx / `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` / uncaught exception | **Raise, no release** | `AP2GuardCommitUncertain` raised. The commit POST may have reached and mutated Cycles before the failure, so auto-release could undo a successful settle. `error_code` distinguishes the flavor (`TRANSPORT_ERROR`, `SERVER_ERROR`, `COMMIT_RAISED`, or the specific code) |
+| Commit returns 4xx with unrecognized code | **Release + raise** | Server explicitly rejected the request (malformed, forbidden, etc.) — release is safe. `AP2GuardCommitFailed` raised with `released` + `release_error` so the caller can still see the reconciliation context |
 | `guard.abort(reason)` called inside `with` | **Release** | Reason `ap2_guard_aborted:{reason}` |
 | `dry_run=True` | **Neither** | `__enter__` raises `AP2DryRunResult` carrying the decision payload — the `with` body never runs, so a real PSP call cannot leak under a dry-run probe |
 
@@ -197,7 +197,7 @@ Exception hierarchy:
 | `AP2GuardError` | Base for all AP2-guard errors |
 | `AP2GuardDenied` | Cycles returned `DENY` or the reserve POST failed |
 | `AP2DryRunResult` | Raised from `__enter__` when `dry_run=True` — carries the decision payload; the `with` body never executes |
-| `AP2GuardCommitUncertain` | Commit returned a terminal status (`RESERVATION_FINALIZED`, `RESERVATION_EXPIRED`, or `IDEMPOTENCY_MISMATCH`) after the body ran. No auto-release (a prior commit may already have settled). `RESERVATION_EXPIRED` is the worst case: PSP may have charged while Cycles reclaimed the budget on TTL. Reconcile with PSP |
+| `AP2GuardCommitUncertain` | Commit outcome is unknown after the body ran. Covers terminal status codes (`RESERVATION_FINALIZED`, `RESERVATION_EXPIRED`, `IDEMPOTENCY_MISMATCH`), transport-level failures (`error_code="TRANSPORT_ERROR"`), 5xx server errors (`error_code="SERVER_ERROR"` or specific code), and uncaught exceptions during commit (`error_code="COMMIT_RAISED"`, with the original chained via `__cause__`). **No auto-release** — the POST may have mutated Cycles before the failure. Reconcile with PSP |
 | `AP2GuardCommitFailed` | Commit was rejected with an unrecognized code after the body ran. Check `.released` (bool) and `.release_error` (string \| None) on the exception — `released=False` means budget is stranded until TTL; reconcile with PSP either way |
 | `AP2CurrencyError` | Non-USD mandate in v0.1 (subclass of `ValueError`) |
 | `AP2MandateError` | Adapter input is malformed — NaN, infinity, sub-micro precision, missing payee, etc. (subclass of `ValueError`) |
