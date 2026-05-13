@@ -1,0 +1,81 @@
+"""Clean exit → commit_reservation with the deterministic AP2 commit key."""
+
+from __future__ import annotations
+
+from runcycles_ap2 import cycles_guard_payment
+from tests.conftest import allow_response, commit_success_response
+
+
+class TestCleanCommit:
+    def test_commit_called_with_ap2_idempotency_key(self, mock_client, mandate) -> None:
+        mock_client.create_reservation.return_value = allow_response("rsv_clean_001")
+        mock_client.commit_reservation.return_value = commit_success_response()
+
+        with cycles_guard_payment(mock_client, mandate=mandate, run_id="run_1", tenant="acme", agent="bot") as guard:
+            assert guard.reservation_id == "rsv_clean_001"
+            assert guard.decision is not None
+            assert guard.decision.value == "ALLOW"
+
+        assert guard.committed is True
+        mock_client.commit_reservation.assert_called_once()
+        called_id, called_body = mock_client.commit_reservation.call_args[0]
+        assert called_id == "rsv_clean_001"
+        assert called_body["idempotency_key"] == "ap2:ap2-tx-001:commit"
+        assert called_body["actual"] == {"unit": "USD_MICROCENTS", "amount": 19_900_000_000}
+        mock_client.release_reservation.assert_not_called()
+
+    def test_actual_micros_override_is_committed(self, mock_client, mandate) -> None:
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.return_value = commit_success_response()
+
+        with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as guard:
+            guard.set_actual_micros(5_000_000_000)
+
+        body = mock_client.commit_reservation.call_args[0][1]
+        assert body["actual"]["amount"] == 5_000_000_000
+
+    def test_attach_receipt_fields_lands_in_commit_metadata_and_receipt(self, mock_client, mandate) -> None:
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.return_value = commit_success_response()
+
+        with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme", agent="bot") as guard:
+            guard.attach_receipt_fields(psp_ref="psp_abc", trace_id="t1")
+
+        body = mock_client.commit_reservation.call_args[0][1]
+        assert body["metadata"]["psp_ref"] == "psp_abc"
+        assert body["metadata"]["trace_id"] == "t1"
+        assert guard.receipt is not None
+        assert guard.receipt.psp_ref == "psp_abc"
+        assert guard.receipt.extra == {"trace_id": "t1"}
+        assert guard.receipt.committed is True
+        assert guard.receipt.action_kind == "payment.charge"
+
+    def test_emit_receipt_false_skips_receipt(self, mock_client, mandate) -> None:
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.return_value = commit_success_response()
+
+        with cycles_guard_payment(
+            mock_client,
+            mandate=mandate,
+            run_id="r",
+            tenant="acme",
+            emit_receipt=False,
+        ) as guard:
+            pass
+
+        assert guard.receipt is None
+        assert guard.committed is True
+
+    def test_reserve_body_carries_policy_keys(self, mock_client, mandate) -> None:
+        mock_client.create_reservation.return_value = allow_response()
+        mock_client.commit_reservation.return_value = commit_success_response()
+
+        with cycles_guard_payment(mock_client, mandate=mandate, run_id="r", tenant="acme") as _:
+            pass
+
+        body = mock_client.create_reservation.call_args[0][0]
+        assert body["idempotency_key"] == "ap2:ap2-tx-001:reserve"
+        assert body["action"]["policy_keys"]["host"] == "merchant.example"
+        assert body["action"]["policy_keys"]["custom"]["payment_protocol"] == "ap2"
+        assert body["subject"]["dimensions"]["ap2_transaction_id"] == "ap2-tx-001"
+        assert body["overage_policy"] == "REJECT"

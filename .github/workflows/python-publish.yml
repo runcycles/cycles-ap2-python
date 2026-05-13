@@ -1,0 +1,151 @@
+name: Publish Python package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        required: true
+        default: "testpypi"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+# Default least-privilege; publish-* jobs override with id-token: write.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      # Fail-fast before build/publish if (a) pyproject.toml declares a pre-release
+      # version (e.g. 1.0.0.dev0, 1.0.0a1) when a final-version tag (vX.Y.Z) was
+      # pushed, or (b) the tag version doesn't match pyproject.toml. PyPI rejects
+      # duplicate versions server-side, but a local guard surfaces the operator
+      # error before the upload phase.
+      - name: Verify pyproject version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python -c "import tomllib,sys; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v)" > /tmp/pyproject_version
+          PYPROJECT_VERSION=$(cat /tmp/pyproject_version)
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "pyproject.toml version: ${PYPROJECT_VERSION}"
+          echo "Git tag version:        ${TAG_VERSION}"
+          if [ "${PYPROJECT_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::Version mismatch: pyproject.toml has '${PYPROJECT_VERSION}' but tag is 'v${TAG_VERSION}'. Bump pyproject.toml or retag."
+            exit 1
+          fi
+
+      - name: Install build tool
+        run: python -m pip install --upgrade pip build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish-to-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/runcycles-ap2
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-to-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/runcycles-ap2
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+
+  create-release:
+    name: Create GitHub Release
+    needs: publish-to-pypi
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Extract the section between this version's heading and the next "## [" heading.
+          # Uses string functions instead of regex to stay portable across awk variants.
+          notes=$(awk -v v="$version" '
+            BEGIN { start = "## [" v "]"; flag = 0 }
+            substr($0, 1, length(start)) == start { flag = 1; next }
+            substr($0, 1, 4) == "## [" { flag = 0 }
+            flag { print }
+          ' CHANGELOG.md)
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            echo "::warning::No CHANGELOG entry found for v${version} — using fallback body"
+            notes="Release v${version}. See commit history for changes."
+          fi
+          {
+            echo "notes<<EOF_GH_OUTPUT"
+            printf '%s\n' "$notes"
+            echo "EOF_GH_OUTPUT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          name: ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.notes }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
