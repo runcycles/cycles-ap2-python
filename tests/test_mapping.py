@@ -215,22 +215,59 @@ class TestAmountMicros:
         # 1.12345678 * 1e8 = 112345678 micro-cents — exact, no precision loss.
         assert m.amount_micros() == 112_345_678
 
-    def test_large_value_converts_exactly(self) -> None:
-        # P2 regression: the previous Decimal-multiplication path used the default
-        # 28-digit context and silently rounded large inputs. The integer-tuple path
-        # is unconditional — any validated input converts exactly regardless of size.
+    def test_large_value_converts_exactly_within_int64_cap(self) -> None:
+        # P2 regression: even at the int64 boundary, the conversion stays exact (no
+        # silent rounding via the default decimal context that the earlier `value *
+        # 10**8` path would have introduced for >28-digit results).
         m = AP2Mandate(
             transaction_id="tx",
-            amount_value="123456789012345678901.12345678",
+            amount_value="92233720368.54775807",
             currency="USD",
             payee_website="x.example",
         )
-        # 21 integer digits + 8 fractional, * 1e8 → exactly 29 digits.
-        assert m.amount_micros() == 12_345_678_901_234_567_890_112_345_678
+        # int64.max == 9_223_372_036_854_775_807. Exact, no rounding.
+        assert m.amount_micros() == 9_223_372_036_854_775_807
 
     def test_integer_value_converts_exactly(self) -> None:
         m = AP2Mandate(transaction_id="tx", amount_value="100", currency="USD", payee_website="x.example")
         assert m.amount_micros() == 10_000_000_000
+
+    def test_huge_exponent_notation_rejected_short_input(self) -> None:
+        # P2 DoS regression: `Decimal("1E+1000000000000")` is short (16 chars), finite,
+        # and positive — it used to pass every validation and then try to allocate a
+        # trillion-digit int via 10**shift. The digit-count cap catches it cleanly.
+        m = AP2Mandate(
+            transaction_id="tx",
+            amount_value="1E+1000000000000",
+            currency="USD",
+            payee_website="x.example",
+        )
+        with pytest.raises(AP2MandateError, match="int64"):
+            m.amount_micros()
+
+    def test_zero_with_huge_exponent_rejected(self) -> None:
+        # P2 DoS regression: even a zero value with a huge exponent would have
+        # triggered the allocation before the multiplication zeroed the result.
+        m = AP2Mandate(
+            transaction_id="tx",
+            amount_value="0E+1000000000000",
+            currency="USD",
+            payee_website="x.example",
+        )
+        with pytest.raises(AP2MandateError, match="int64"):
+            m.amount_micros()
+
+    def test_too_many_digits_rejected(self) -> None:
+        # A legitimate-shaped but out-of-range amount: 20 significant digits. The
+        # 19-digit cap (int64.max digit count) catches it before any allocation.
+        m = AP2Mandate(
+            transaction_id="tx",
+            amount_value="123456789012.12345678",
+            currency="USD",
+            payee_website="x.example",
+        )
+        with pytest.raises(AP2MandateError, match="int64"):
+            m.amount_micros()
 
 
 class TestBuildReservationBody:

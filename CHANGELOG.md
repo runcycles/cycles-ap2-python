@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AP2DryRunResult` exception — raised from `__enter__` when `dry_run=True` so the `with` body cannot execute (prevents real PSP calls under dry-run from moving money off the books).
 - `AP2GuardCommitFailed` exception — raised after a release attempt when the server rejects a commit with an unrecognized code; carries `released: bool` and `release_error: str | None` so the caller can distinguish "budget recovered" from "budget stranded until TTL".
 - USD-only enforcement; non-USD raises `AP2CurrencyError`. Rejects NaN, +/-Infinity, and amounts with more than 8 decimal places (sub-micro precision); wraps all `decimal` failures as `AP2MandateError`.
-- Exact integer-tuple conversion in `amount_micros()` — does not depend on the default decimal context, so arbitrarily large valid inputs convert exactly instead of being silently rounded.
-- 66 tests, ≥ 95% coverage, ruff + mypy strict.
+- Exact integer-tuple conversion in `amount_micros()` — does not depend on the default decimal context, so large valid inputs convert exactly instead of being silently rounded.
+- Pre-allocation digit-count cap (≤ 19 integer digits, the int64 USD_MICROCENTS ceiling) blocks exponent-notation DoS like `Decimal("1E+1000000000000")` that would otherwise hang allocating a trillion-digit scaling factor.
+- 69 tests, ≥ 95% coverage, ruff + mypy strict.
 
 ### Planned for v0.2
 - `AsyncGuardedPayment` (asyncio).

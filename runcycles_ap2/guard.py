@@ -28,13 +28,20 @@ class GuardedPayment:
     """Sync context manager: reserve on ``__enter__``, commit/release on ``__exit__``.
 
     Decision rules:
-      - Clean exit (no exception) → ``commit_reservation`` with ``ap2:{tx}:commit``.
+      - Clean exit (no exception) → ``commit_reservation`` with the deterministic AP2
+        commit idempotency key (see :func:`runcycles_ap2.mapping.idempotency_key`).
       - Exception inside ``with`` block → ``release_reservation`` with reason
-        ``ap2_guard_failed:{ExcType}`` and key ``ap2:{tx}:release:{ExcType}``.
+        ``ap2_guard_failed:{ExcType}`` and the matching release idempotency key.
       - Server ``Decision.DENY`` on enter → raises :class:`AP2GuardDenied`; real money
         never moves and no commit/release is issued.
+      - ``dry_run=True`` → raises :class:`AP2DryRunResult` from ``__enter__`` so the
+        ``with`` body never executes (a body-level PSP call would otherwise move money
+        with no Cycles record).
+      - Commit rejected with unrecognized code → raises :class:`AP2GuardCommitFailed`
+        after attempting a release; check the exception's ``released`` /
+        ``release_error`` attributes to know whether budget was recovered.
       - Same ``transaction_id`` on a retry → server returns the original reservation
-        (idempotent replay), so the second attempt cannot double-spend.
+        (idempotent replay) because the idempotency key is deterministic.
     """
 
     def __init__(

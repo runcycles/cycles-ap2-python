@@ -2,6 +2,20 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — third-round review fixes (P2 DoS + P3 stale docs)
+
+**Author:** code-review response on PR #1 (round 3)
+**Scope:** denial-of-service vector, internal/external doc parity
+
+1. **[P2] Exponent-notation DoS in `amount_micros()`** — a short, finite, positive Decimal like `1E+1000000000000` (16 chars, fits the 64-char field) used to pass every validation: `is_finite()` is True, value is positive, and exponent ≥ -8. The code then tried to compute `10 ** (10**12 + 8)`, allocating a trillion-digit integer and hanging the process. Even `0E+1000000000000` triggered the same allocation before the multiplication zeroed the result. **Fix:** pre-allocation digit-count cap. `total_integer_digits = len(digits) + max(0, exponent)` must be ≤ 19 (the digit count of int64.max, which is the protocol's USD_MICROCENTS ceiling). New regression tests cover `1E+1000000000000`, `0E+1000000000000`, and 20-digit "legitimate-shaped but out-of-range" amounts. Also updated the earlier `test_large_value_converts_exactly` test which used a 29-digit value beyond int64 — now uses int64.max (`92233720368.54775807`) which still exercises the no-rounding path.
+
+2. **[P3] Stale README mapping row + `GuardedPayment` class docstring** — README mapping table still claimed `int(round(value * 1e8))` (which is what the old default-context multiplication did) instead of the current exact-integer-tuple conversion. `GuardedPayment.__doc__` still showed `ap2:{tx}:commit` raw-key shapes. **Fix:** rewrote both to match the implementation; docstring now references `runcycles_ap2.mapping.idempotency_key`, calls out the dry-run probe behavior and `AP2GuardCommitFailed.released`/`release_error` for callers reading source.
+
+**Test posture after fixes:**
+- 69 tests (up from 66), 97.89% coverage.
+
+No public API additions.
+
 ## 2026-05-13 — second-round review fixes (2×P2 + P3)
 
 **Author:** code-review response on PR #1 (round 2)

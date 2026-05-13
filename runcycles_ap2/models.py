@@ -18,6 +18,14 @@ from runcycles_ap2.exceptions import AP2CurrencyError, AP2MandateError
 # would be silently rounded. We reject it explicitly so callers don't lose precision.
 _MAX_DECIMAL_PLACES = 8
 
+# Cycles `Amount.amount` is int64; max is 9_223_372_036_854_775_807 (19 digits ≈ $92.2B).
+# We bound the source decimal's significant-plus-integer-position digit count BEFORE doing
+# any `10**shift` math — otherwise a short string like "1E+1000000000000" (a finite Decimal
+# with a 10^12 exponent) would allocate a trillion-digit integer and hang the process.
+# Capping at the int64 digit count lets every legitimate USD amount pass while turning the
+# DoS vector into a clean AP2MandateError.
+_MAX_INTEGER_DIGITS = 19
+
 _CONFIG = ConfigDict(populate_by_name=True, extra="forbid", str_strip_whitespace=True)
 
 
@@ -40,11 +48,14 @@ class AP2Mandate(BaseModel):
     def amount_micros(self) -> int:
         """Convert ``amount_value`` (decimal string in major units) to USD micro-cents.
 
-        v0.1 enforces USD only. Rejects NaN, +/-Infinity, negative values, and any input
-        with more than 8 decimal places (sub-micro precision can't survive the conversion
-        and we'd rather raise than silently round). All ``decimal`` failure modes —
-        including ``InvalidOperation`` and ``OverflowError`` from the final ``int()``
-        cast — are wrapped as :class:`AP2MandateError`.
+        v0.1 enforces USD only. Rejects:
+          - non-decimals, NaN, +/-Infinity, negative values;
+          - inputs with more than 8 decimal places (sub-micro precision would be lost);
+          - inputs whose total magnitude would exceed the protocol's int64 cap
+            (this also blocks the ``1E+1000000000000`` exponent-notation DoS vector
+            that would otherwise allocate a trillion-digit scaling factor).
+
+        All ``decimal`` failure modes are wrapped as :class:`AP2MandateError`.
         """
         if self.currency.upper() != "USD":
             raise AP2CurrencyError(f"v0.1 supports USD only; got {self.currency!r}. Multi-currency lands in v0.2.")
@@ -70,6 +81,19 @@ class AP2Mandate(BaseModel):
                 "sub-micro precision would be lost"
             )
 
+        # Bound the eventual integer size BEFORE computing 10**shift. ``len(digits)``
+        # counts significant digits; ``max(0, exponent)`` counts the integer-position
+        # padding zeros a positive exponent implies. Their sum is the digit count of
+        # the unscaled integer value; capping it at 19 (int64.max digit count) blocks
+        # exponent-notation DoS like ``Decimal("1E+1000000000000")`` and also rejects
+        # legitimate-but-too-large amounts (the server would reject them anyway).
+        total_integer_digits = len(digits) + max(0, exponent)
+        if total_integer_digits > _MAX_INTEGER_DIGITS:
+            raise AP2MandateError(
+                f"amount_value {self.amount_value!r} exceeds int64 USD micro-cent range "
+                f"({total_integer_digits} integer digits > {_MAX_INTEGER_DIGITS} max)"
+            )
+
         # Exact integer conversion via `as_tuple()`. We deliberately do NOT compute
         # `value * 10**8` as Decimals: that uses the default 28-digit decimal context
         # and silently rounds inputs larger than the protocol cap (which a malformed
@@ -83,8 +107,9 @@ class AP2Mandate(BaseModel):
             int_value = int_value * 10 + d
         # `value` equals int_value * 10**exponent, so micros = int_value * 10**(exponent+8).
         # `exponent + _MAX_DECIMAL_PLACES` is always >= 0 here because the validation
-        # above rejected `exponent < -_MAX_DECIMAL_PLACES`. The cast keeps mypy happy
-        # (negative-exponent int.__pow__ widens to float).
+        # above rejected `exponent < -_MAX_DECIMAL_PLACES`. The bounded-digits check
+        # above guarantees `shift <= _MAX_INTEGER_DIGITS + _MAX_DECIMAL_PLACES` so the
+        # `10**shift` allocation is small.
         shift = exponent + _MAX_DECIMAL_PLACES
         scale: int = int(10**shift)
         return int_value * scale

@@ -89,7 +89,7 @@ Required upstream attributes: `payment_mandate.transaction_id`, `payment_mandate
 | AP2 source | Cycles destination | Notes |
 |---|---|---|
 | `PaymentMandate.transaction_id` | `Subject.dimensions["ap2_transaction_id"]` | also feeds idempotency keys |
-| `PaymentMandate.payment_amount.value` | `Amount.amount` | `int(round(value * 1e8))` USD micro-cents |
+| `PaymentMandate.payment_amount.value` | `Amount.amount` | Exact integer conversion to USD micro-cents (10⁻⁸ USD). Rejects NaN, ±Infinity, negative values, more than 8 decimal places, or amounts beyond int64 micro-cents |
 | `PaymentMandate.payment_amount.currency` | `Action.policy_keys.custom["currency"]` | MVP enforces `"USD"` |
 | `PaymentMandate.payee.website` | `Action.policy_keys.host` | required for policy routing |
 | `CheckoutMandate.hash` | `Subject.dimensions["checkout_hash"]` | optional |
