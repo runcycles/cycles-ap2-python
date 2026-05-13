@@ -19,7 +19,7 @@ from runcycles_ap2.guard import (
 )
 from runcycles_ap2.models import AP2Mandate, RuntimeAuthorityReceipt
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "AP2CurrencyError",

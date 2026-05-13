@@ -91,7 +91,9 @@ class TestAsyncCleanCommit:
         assert guard.receipt is None
         assert guard.committed is True
 
-    async def test_reserve_body_carries_policy_keys_and_consume_once_scope(self, async_mock_client) -> None:
+    async def test_reserve_body_carries_ap2_routing_dimensions_and_consume_once_scope(self, async_mock_client) -> None:
+        # v0.3 wire-shape: routing context on dimensions, open_mandate_hash drives
+        # the consume-once idempotency scope.
         from tests.conftest import make_mandate
 
         async_mock_client.create_reservation.return_value = allow_response()
@@ -104,7 +106,11 @@ class TestAsyncCleanCommit:
         body = async_mock_client.create_reservation.call_args[0][0]
         assert body["idempotency_key"] == idempotency_key(m, "reserve")
         assert ":open_mandate:" in body["idempotency_key"]
-        assert body["action"]["policy_keys"]["host"] == "merchant.example"
+        # Routing context lives on dimensions, not on action.policy_keys:
+        assert body["subject"]["dimensions"]["payee_website"] == "merchant.example"
+        assert body["subject"]["dimensions"]["payment_currency"] == "USD"
+        assert body["subject"]["dimensions"]["payment_protocol"] == "ap2"
+        assert "policy_keys" not in body["action"]
 
     async def test_set_actual_micros_above_int64_rejected(self, async_mock_client, mandate) -> None:
         async_mock_client.create_reservation.return_value = allow_response()

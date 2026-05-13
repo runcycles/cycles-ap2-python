@@ -11,15 +11,26 @@ DEFAULT_ACTION_KIND: Final[str] = "payment.charge"
 DEFAULT_ACTION_NAME: Final[str] = "ap2.payment_mandate.present"
 
 # Subject.dimensions keys (lower-case, [a-z0-9_.-], <=256 chars per value, max 16 keys).
+#
+# The first four are AP2-specific transaction/correlation identifiers.
+# The last three (payee_website / payment_currency / payment_protocol) used to ride
+# on `Action.policy_keys` in v0.1.x and v0.2.x but moved here in v0.3 — see the
+# "Wire shape" section of AUDIT.md. We surface them as dimensions so they reach
+# the server in a shape the protocol's base Action schema accepts; the same values
+# still flow into the client-side RuntimeAuthorityReceipt.policy_keys field, so
+# the audit record is unchanged.
 DIM_RUN_ID: Final[str] = "run_id"
 DIM_AP2_TRANSACTION_ID: Final[str] = "ap2_transaction_id"
 DIM_CHECKOUT_HASH: Final[str] = "checkout_hash"
 DIM_OPEN_MANDATE_HASH: Final[str] = "open_mandate_hash"
+DIM_PAYEE_WEBSITE: Final[str] = "payee_website"
+DIM_PAYMENT_CURRENCY: Final[str] = "payment_currency"
+DIM_PAYMENT_PROTOCOL: Final[str] = "payment_protocol"
 
-# Action.policy_keys.custom keys.
-CUSTOM_PAYMENT_PROTOCOL: Final[str] = "payment_protocol"
-CUSTOM_CURRENCY: Final[str] = "currency"
-CUSTOM_PAYMENT_PROTOCOL_VALUE: Final[str] = "ap2"
+# Constant value pinned in the dimensions to mark all reservations made by this
+# package as part of the AP2 payment-mandate flow (for downstream filtering /
+# auditing in dashboards).
+PAYMENT_PROTOCOL_VALUE: Final[str] = "ap2"
 
 # Lifecycle defaults — payments must NOT overspend, so DENY (not ALLOW_IF_AVAILABLE).
 DEFAULT_TTL_MS: Final[int] = 60_000

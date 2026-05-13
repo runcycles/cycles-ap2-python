@@ -7,12 +7,14 @@ import hashlib
 import pytest
 
 from runcycles_ap2._constants import (
-    CUSTOM_CURRENCY,
-    CUSTOM_PAYMENT_PROTOCOL,
     DIM_AP2_TRANSACTION_ID,
     DIM_CHECKOUT_HASH,
     DIM_OPEN_MANDATE_HASH,
+    DIM_PAYEE_WEBSITE,
+    DIM_PAYMENT_CURRENCY,
+    DIM_PAYMENT_PROTOCOL,
     DIM_RUN_ID,
+    PAYMENT_PROTOCOL_VALUE,
     TRANSACTION_ID_HASH_LEN,
 )
 from runcycles_ap2.exceptions import AP2CurrencyError, AP2MandateError
@@ -20,6 +22,7 @@ from runcycles_ap2.mapping import (
     build_action,
     build_commit_body,
     build_estimate,
+    build_receipt_policy_keys,
     build_release_body,
     build_reservation_body,
     build_subject,
@@ -187,6 +190,10 @@ class TestBuildSubject:
         assert s["dimensions"][DIM_RUN_ID] == "run1"
         assert s["dimensions"][DIM_AP2_TRANSACTION_ID] == "ap2-tx-001"
         assert DIM_CHECKOUT_HASH not in s["dimensions"]
+        # v0.3: AP2 routing context now lives on dimensions, not on action.policy_keys.
+        assert s["dimensions"][DIM_PAYEE_WEBSITE] == "merchant.example"
+        assert s["dimensions"][DIM_PAYMENT_CURRENCY] == "USD"
+        assert s["dimensions"][DIM_PAYMENT_PROTOCOL] == PAYMENT_PROTOCOL_VALUE
 
     def test_full(self) -> None:
         m = make_mandate(checkout_hash="ch_x", open_mandate_hash="omh_y")
@@ -223,16 +230,32 @@ class TestBuildSubject:
 
 
 class TestBuildAction:
-    def test_default_kind(self) -> None:
+    def test_default_kind_no_policy_keys_on_wire(self) -> None:
+        # v0.3 wire-shape change: build_action() returns ONLY {kind, name}. The
+        # AP2 routing context (host / currency / payment_protocol) moved to
+        # Subject.dimensions — see TestBuildSubject.test_minimal — and the
+        # client-side receipt builds policy_keys from build_receipt_policy_keys.
         a = build_action(make_mandate(), action_kind="payment.charge")
-        assert a["kind"] == "payment.charge"
-        assert a["policy_keys"]["host"] == "merchant.example"
-        assert a["policy_keys"]["custom"][CUSTOM_PAYMENT_PROTOCOL] == "ap2"
-        assert a["policy_keys"]["custom"][CUSTOM_CURRENCY] == "USD"
+        assert a == {"kind": "payment.charge", "name": "ap2.payment_mandate.present"}
+        assert "policy_keys" not in a  # explicit regression assertion vs v0.2 wire shape
 
     def test_action_kind_override(self) -> None:
         a = build_action(make_mandate(), action_kind="payment.refund")
         assert a["kind"] == "payment.refund"
+
+
+class TestBuildReceiptPolicyKeys:
+    """v0.3: the policy_keys shape lives on the client-side receipt only."""
+
+    def test_shape_unchanged_for_receipt_consumers(self) -> None:
+        pk = build_receipt_policy_keys(make_mandate())
+        assert pk == {
+            "host": "merchant.example",
+            "custom": {
+                DIM_PAYMENT_PROTOCOL: PAYMENT_PROTOCOL_VALUE,
+                DIM_PAYMENT_CURRENCY: "USD",
+            },
+        }
 
 
 class TestBuildEstimate:

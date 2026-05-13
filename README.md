@@ -133,14 +133,16 @@ Required upstream attributes (duck-typed): `payment_mandate.transaction_id`, `pa
 |---|---|---|
 | `PaymentMandate.transaction_id` | `Subject.dimensions["ap2_transaction_id"]` | feeds the idempotency key only when `open_mandate_hash` is absent (otherwise the open mandate is the consume-once scope — see [Deterministic idempotency keys](#deterministic-idempotency-keys)) |
 | `PaymentMandate.payment_amount.value` | `Amount.amount` | Exact integer conversion to USD micro-cents (10⁻⁸ USD). Rejects NaN, ±Infinity, negative values, more than 8 decimal places, or amounts beyond int64 micro-cents |
-| `PaymentMandate.payment_amount.currency` | `Action.policy_keys.custom["currency"]` | MVP enforces `"USD"` |
-| `PaymentMandate.payee.website` | `Action.policy_keys.host` | required for policy routing |
+| `PaymentMandate.payment_amount.currency` | `Subject.dimensions["payment_currency"]` | MVP enforces `"USD"` |
+| `PaymentMandate.payee.website` | `Subject.dimensions["payee_website"]` | merchant identifier |
 | `CheckoutMandate.hash` | `Subject.dimensions["checkout_hash"]` | optional |
 | `sha256(open_mandate_canonical)` | `Subject.dimensions["open_mandate_hash"]` | optional, human-not-present |
 | caller `run_id` | `Subject.dimensions["run_id"]` | required |
-| const `"ap2"` | `Action.policy_keys.custom["payment_protocol"]` | marker |
+| const `"ap2"` | `Subject.dimensions["payment_protocol"]` | marker — tags every reservation made by this wrapper |
 | const `"payment.charge"` | `Action.kind` | built-in `high_risk` kind in `cycles-action-kinds-v0.1.26.yaml` |
 | const `USD_MICROCENTS` | `Amount.unit` | single-unit per reservation |
+
+> **Wire-shape note (v0.3+).** Earlier versions of this wrapper sent the AP2 routing context (`host`, `currency`, `payment_protocol`) on `Action.policy_keys` per the `cycles-action-kinds-v0.1.26.yaml` extension. Production `cycles-server` v0.1.25.x doesn't yet implement that extension, and its base `Action` schema has `additionalProperties: false`, so the old shape triggered a 400 *Malformed request body*. v0.3 surfaces the same values as `Subject.dimensions` instead so the wrapper works against current production servers. The client-side `RuntimeAuthorityReceipt.policy_keys` field is unchanged — dashboards and dispute evidence still see the canonical shape.
 
 No protocol changes required for v0.1 — `payment.charge` and `payment.refund` already exist as `high_risk` action kinds in the Cycles protocol registry.
 

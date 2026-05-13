@@ -10,17 +10,18 @@ import hashlib
 from typing import Any
 
 from runcycles_ap2._constants import (
-    CUSTOM_CURRENCY,
-    CUSTOM_PAYMENT_PROTOCOL,
-    CUSTOM_PAYMENT_PROTOCOL_VALUE,
     DEFAULT_ACTION_NAME,
     DIM_AP2_TRANSACTION_ID,
     DIM_CHECKOUT_HASH,
     DIM_OPEN_MANDATE_HASH,
+    DIM_PAYEE_WEBSITE,
+    DIM_PAYMENT_CURRENCY,
+    DIM_PAYMENT_PROTOCOL,
     DIM_RUN_ID,
     IDEMPOTENCY_PREFIX,
     IDEMPOTENCY_SCOPE_OPEN_MANDATE,
     IDEMPOTENCY_SCOPE_TRANSACTION,
+    PAYMENT_PROTOCOL_VALUE,
     TRANSACTION_ID_HASH_LEN,
 )
 from runcycles_ap2._validation import validate_micros
@@ -122,6 +123,14 @@ def build_subject(
     dimensions: dict[str, str] = {
         DIM_RUN_ID: run_id,
         DIM_AP2_TRANSACTION_ID: mandate.transaction_id,
+        # AP2 routing context — used to live on `Action.policy_keys` in v0.1/0.2;
+        # moved here in v0.3 for compatibility with `cycles-server` v0.1.25.x's
+        # base `Action` schema (which has `additionalProperties: false` and does
+        # not yet implement the v0.1.26 `policy_keys` extension). The same values
+        # are still attached to the client-side RuntimeAuthorityReceipt.
+        DIM_PAYEE_WEBSITE: mandate.payee_website,
+        DIM_PAYMENT_CURRENCY: mandate.currency.upper(),
+        DIM_PAYMENT_PROTOCOL: PAYMENT_PROTOCOL_VALUE,
     }
     if mandate.checkout_hash:
         dimensions[DIM_CHECKOUT_HASH] = mandate.checkout_hash
@@ -138,16 +147,39 @@ def build_subject(
 
 
 def build_action(mandate: AP2Mandate, *, action_kind: str) -> dict[str, Any]:
-    """Construct the Action portion (including ``policy_keys``) of a reservation create body."""
+    """Construct the Action portion of a reservation create body.
+
+    v0.3 wire-shape change: AP2 routing context (host / currency / payment_protocol)
+    no longer rides on ``Action.policy_keys`` — it ships on ``Subject.dimensions``
+    instead. See ``build_subject()`` and AUDIT.md. The same values are still
+    surfaced on the client-side ``RuntimeAuthorityReceipt.policy_keys`` field via
+    :func:`build_receipt_policy_keys` so dashboards and dispute evidence are
+    unchanged.
+
+    Why: ``cycles-server`` v0.1.25.x's base ``Action`` schema has
+    ``additionalProperties: false`` and does not yet implement the v0.1.26
+    ``policy_keys`` extension; sending the field there triggers a
+    ``Malformed request body`` 400. Moving the values to dimensions lets the
+    wrapper talk to current production servers; when the extension lands
+    server-side, callers needing first-class policy routing can re-emit
+    ``Action.policy_keys`` via a future opt-in flag.
+    """
     return {
         "kind": action_kind,
         "name": DEFAULT_ACTION_NAME,
-        "policy_keys": {
-            "host": mandate.payee_website,
-            "custom": {
-                CUSTOM_PAYMENT_PROTOCOL: CUSTOM_PAYMENT_PROTOCOL_VALUE,
-                CUSTOM_CURRENCY: mandate.currency.upper(),
-            },
+    }
+
+
+def build_receipt_policy_keys(mandate: AP2Mandate) -> dict[str, Any]:
+    """The same shape that used to ride on ``Action.policy_keys``, kept for the
+    client-side runtime-authority receipt only. Not part of the wire payload
+    as of v0.3.
+    """
+    return {
+        "host": mandate.payee_website,
+        "custom": {
+            DIM_PAYMENT_PROTOCOL: PAYMENT_PROTOCOL_VALUE,
+            DIM_PAYMENT_CURRENCY: mandate.currency.upper(),
         },
     }
 
