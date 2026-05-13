@@ -2,6 +2,17 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — live integration smoke tests (post-v0.2.0)
+
+**Author:** post-release hygiene
+**Scope:** test surface only; no public API change, no wire change, no version bump
+
+Added `tests/integration/test_live_ap2_guard.py` — five smoke tests (four sync + one async) exercising the AP2 wrapper end-to-end against a real Cycles server. Pattern mirrors `cycles-client-python/tests/integration/test_live_server.py`: module-level `pytest.mark.skipif(not CYCLES_BASE_URL)` so the whole file is skipped at collection time when env vars are unset. Default `pytest` runs and CI ignore it. Run locally with `CYCLES_BASE_URL=... CYCLES_API_KEY=... CYCLES_TENANT=... pytest tests/integration -v`.
+
+Each test uses a fresh UUID-based `transaction_id` and a `0.00000001` USD amount so the suite is idempotent across runs and doesn't consume meaningful budget. Covers: sync clean commit, sync exception→release, sync dry-run, async clean commit with `open_mandate_hash` scope, sync idempotent replay.
+
+This catches wire-shape regressions that the existing 147 mock-based tests can't (e.g., a server-side rename of a `Subject.dimensions` key, a field that flips from string to enum, etc.).
+
 ## 2026-05-13 — v0.2.0 — AsyncGuardedPayment
 
 **Author:** v0.2.0 release

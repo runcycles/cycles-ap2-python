@@ -281,6 +281,21 @@ mypy runcycles_ap2
 pytest --cov=runcycles_ap2 --cov-fail-under=95
 ```
 
+### Live integration smoke (optional)
+
+`tests/integration/test_live_ap2_guard.py` exercises the sync and async wrappers end-to-end against a real Cycles server — useful for catching wire-shape regressions that mock-based unit tests can't see. The whole file is skipped at collection time when `CYCLES_BASE_URL` is unset, so default `pytest` runs (and CI) ignore it.
+
+To run locally against a dev Cycles server:
+
+```bash
+CYCLES_BASE_URL=http://localhost:7878 \
+CYCLES_API_KEY=cyc_dev_xxx \
+CYCLES_TENANT=ap2-integration \
+    pytest tests/integration -v
+```
+
+The tenant needs a budget with `payment.charge` permitted. Each test uses a fresh UUID-based `transaction_id` and a tiny `0.00000001` USD amount, so running the suite repeatedly doesn't consume meaningful budget.
+
 CI runs all three checks on Python 3.10 and 3.12 for every push and pull request. See [`AUDIT.md`](AUDIT.md) for the protocol-conformance posture, [`CHANGELOG.md`](CHANGELOG.md) for the release log.
 
 ## Background
