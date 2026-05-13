@@ -119,6 +119,30 @@ class TestAsyncCleanCommit:
         async_mock_client.commit_reservation.assert_not_awaited()
         async_mock_client.release_reservation.assert_awaited_once()
 
+    async def test_set_actual_micros_negative_rejected(self, async_mock_client, mandate) -> None:
+        async_mock_client.create_reservation.return_value = allow_response()
+        async_mock_client.release_reservation.return_value = release_success_response()
+
+        with pytest.raises(AP2MandateError, match="non-negative"):
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme") as g:
+                g.set_actual_micros(-1)
+
+        async_mock_client.commit_reservation.assert_not_awaited()
+        async_mock_client.release_reservation.assert_awaited_once()
+
+    @pytest.mark.parametrize("bad", [True, False, 1.5, 1.0, "100", None, [100]])
+    async def test_set_actual_micros_rejects_non_int_types(self, async_mock_client, mandate, bad) -> None:
+        # Mirrors the sync parametrized test: bool is an int subclass, float compares
+        # numerically — both must be rejected up front before reaching the wire.
+        async_mock_client.create_reservation.return_value = allow_response()
+        async_mock_client.release_reservation.return_value = release_success_response()
+
+        with pytest.raises(AP2MandateError, match="must be an int"):
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme") as g:
+                g.set_actual_micros(bad)  # type: ignore[arg-type]
+
+        async_mock_client.commit_reservation.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Release on exception
@@ -162,6 +186,20 @@ class TestAsyncReleaseOnException:
             async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
                 raise RuntimeError("boom")
 
+    async def test_value_error_uses_exception_type_in_key(self, async_mock_client, mandate) -> None:
+        # Mirrors sync: the exception class name is sanitized and embedded in the
+        # release idempotency key, so different exception types get different release
+        # keys (preserves separate dedup buckets if multiple retries hit).
+        async_mock_client.create_reservation.return_value = allow_response("rsv_ve")
+        async_mock_client.release_reservation.return_value = release_success_response()
+
+        with pytest.raises(ValueError):
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
+                raise ValueError("nope")
+
+        body = async_mock_client.release_reservation.call_args[0][1]
+        assert body["idempotency_key"] == idempotency_key(mandate, "release", "ValueError")
+
 
 # ---------------------------------------------------------------------------
 # Denial / dry-run
@@ -196,6 +234,21 @@ class TestAsyncDenial:
         assert ei.value.reason_code == "INVALID_REQUEST"
         assert ei.value.request_id == "req_1"
 
+    async def test_missing_reservation_id_raises_guard_denied(self, async_mock_client, mandate) -> None:
+        # Protocol-violation path: server returns ALLOW with no reservation_id and
+        # dry_run was NOT requested. The guard must raise rather than silently proceed.
+        async_mock_client.create_reservation.return_value = CyclesResponse.success(
+            200,
+            {
+                "decision": "ALLOW",
+                "affected_scopes": ["tenant:acme"],
+                "reserved": {"unit": "USD_MICROCENTS", "amount": 100},
+            },
+        )
+        with pytest.raises(AP2GuardDenied):
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
+                pass
+
 
 class TestAsyncDryRun:
     async def test_dry_run_raises_result_and_body_does_not_run(self, async_mock_client, mandate) -> None:
@@ -223,6 +276,56 @@ class TestAsyncDryRun:
         async_mock_client.commit_reservation.assert_not_awaited()
         async_mock_client.release_reservation.assert_not_awaited()
 
+    async def test_dry_run_deny_raises_guard_denied_not_dry_run_result(self, async_mock_client, mandate) -> None:
+        # DENY pre-empts the dry-run probe path. Caller sees AP2GuardDenied, not
+        # AP2DryRunResult, even with dry_run=True — preserves the "deny is deny"
+        # invariant across both sync and async surfaces.
+        async_mock_client.create_reservation.return_value = deny_response("BUDGET_EXCEEDED")
+
+        with pytest.raises(AP2GuardDenied) as ei:
+            async with cycles_guard_payment_async(
+                async_mock_client, mandate=mandate, run_id="r", tenant="acme", dry_run=True
+            ):
+                pass
+
+        assert ei.value.reason_code == "BUDGET_EXCEEDED"
+
+    async def test_dry_run_result_carries_caps_and_scopes(self, async_mock_client, mandate) -> None:
+        # AP2DryRunResult exposes caps/balances/affected_scopes/reason_code so callers
+        # can introspect the would-be decision without creating a reservation.
+        async_mock_client.create_reservation.return_value = CyclesResponse.success(
+            200,
+            {
+                "decision": "ALLOW_WITH_CAPS",
+                "affected_scopes": ["tenant:acme", "agent:bot"],
+                "scope_path": "tenant:acme",
+                "reserved": {"unit": "USD_MICROCENTS", "amount": 1_000},
+                "caps": {"max_tokens": 500},
+                "reason_code": "NEAR_LIMIT",
+            },
+        )
+
+        with pytest.raises(AP2DryRunResult) as ei:
+            async with cycles_guard_payment_async(
+                async_mock_client, mandate=mandate, run_id="r", tenant="acme", dry_run=True
+            ):
+                pass
+
+        assert ei.value.decision == "ALLOW_WITH_CAPS"
+        assert ei.value.reason_code == "NEAR_LIMIT"
+        assert ei.value.affected_scopes == ["tenant:acme", "agent:bot"]
+        assert ei.value.caps is not None
+
+    async def test_non_dry_run_does_not_set_flag(self, async_mock_client, mandate) -> None:
+        async_mock_client.create_reservation.return_value = allow_response()
+        async_mock_client.commit_reservation.return_value = commit_success_response()
+
+        async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
+            pass
+
+        body = async_mock_client.create_reservation.call_args[0][0]
+        assert "dry_run" not in body
+
 
 # ---------------------------------------------------------------------------
 # Commit-uncertain branches
@@ -239,6 +342,21 @@ class TestAsyncCommitUncertain:
                 pass
 
         assert ei.value.error_code == "IDEMPOTENCY_MISMATCH"
+        async_mock_client.release_reservation.assert_not_awaited()
+
+    async def test_reservation_finalized_raises_uncertain(self, async_mock_client, mandate) -> None:
+        # Third terminal-status code on the same branch. The branch covers all three
+        # (FINALIZED/EXPIRED/MISMATCH); the parity tests already cover EXPIRED and
+        # MISMATCH — adding FINALIZED so a future code change can't break one
+        # without surfacing in the suite.
+        async_mock_client.create_reservation.return_value = allow_response()
+        async_mock_client.commit_reservation.return_value = commit_error_response("RESERVATION_FINALIZED", status=409)
+
+        with pytest.raises(AP2GuardCommitUncertain) as ei:
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
+                pass
+
+        assert ei.value.error_code == "RESERVATION_FINALIZED"
         async_mock_client.release_reservation.assert_not_awaited()
 
     async def test_reservation_expired_raises_uncertain_no_release(self, async_mock_client, mandate) -> None:
@@ -261,6 +379,23 @@ class TestAsyncCommitUncertain:
                 pass
 
         assert ei.value.error_code == "INTERNAL_ERROR"
+        async_mock_client.release_reservation.assert_not_awaited()
+
+    async def test_commit_5xx_without_body_uses_synthetic_code(self, async_mock_client, mandate) -> None:
+        # 5xx with no parseable error body → synthesized error_code="SERVER_ERROR" so
+        # callers branching on .error_code still get a stable discriminator.
+        async_mock_client.create_reservation.return_value = allow_response()
+        async_mock_client.commit_reservation.return_value = CyclesResponse.http_error(
+            502,
+            error_message="bad gateway",
+            body=None,
+        )
+
+        with pytest.raises(AP2GuardCommitUncertain) as ei:
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
+                pass
+
+        assert ei.value.error_code == "SERVER_ERROR"
         async_mock_client.release_reservation.assert_not_awaited()
 
     async def test_commit_transport_error_raises_uncertain_no_release(self, async_mock_client, mandate) -> None:
@@ -307,3 +442,91 @@ class TestAsyncCommitFailed:
         assert ei.value.error_code == "INVALID_REQUEST"
         assert ei.value.released is True
         async_mock_client.release_reservation.assert_awaited_once()
+
+    async def test_commit_failed_records_release_transport_failure(self, async_mock_client, mandate) -> None:
+        # Release transport-fails after a 4xx commit rejection. AP2GuardCommitFailed
+        # must report released=False with the chained exception text in release_error,
+        # so operators can distinguish "budget recovered" from "budget stranded".
+        async_mock_client.create_reservation.return_value = allow_response()
+        async_mock_client.commit_reservation.return_value = commit_error_response("INVALID_REQUEST", status=400)
+        async_mock_client.release_reservation.side_effect = ConnectionError("network down")
+
+        with pytest.raises(AP2GuardCommitFailed) as ei:
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
+                pass
+
+        assert ei.value.error_code == "INVALID_REQUEST"
+        assert ei.value.released is False
+        assert ei.value.release_error is not None
+        assert "ConnectionError" in ei.value.release_error
+        assert "FAILED" in str(ei.value) and "stranded" in str(ei.value)
+
+    async def test_commit_failed_records_release_non_success(self, async_mock_client, mandate) -> None:
+        # Release returns 5xx after a 4xx commit rejection. released=False and the
+        # response status code surfaces in release_error.
+        async_mock_client.create_reservation.return_value = allow_response()
+        async_mock_client.commit_reservation.return_value = commit_error_response("INVALID_REQUEST", status=400)
+        async_mock_client.release_reservation.return_value = commit_error_response("INTERNAL_ERROR", status=500)
+
+        with pytest.raises(AP2GuardCommitFailed) as ei:
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
+                pass
+
+        assert ei.value.released is False
+        assert ei.value.release_error is not None
+        assert "500" in ei.value.release_error
+
+
+# ---------------------------------------------------------------------------
+# AP2-shape adapter end-to-end through AsyncGuardedPayment
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncFromAp2EndToEnd:
+    """Adapter → async guard → wire: confirms the AP2 sample-type shape flows through
+    the full async stack (not just the sync one covered by test_ap2_shape_adapter.py)."""
+
+    async def test_from_ap2_shape_flows_through_async_guard(self, async_mock_client) -> None:
+        from dataclasses import dataclass
+
+        from runcycles_ap2 import AP2Mandate
+
+        @dataclass
+        class _PaymentAmount:
+            value: str
+            currency: str
+
+        @dataclass
+        class _Payee:
+            website: str
+
+        @dataclass
+        class _PaymentMandate:
+            transaction_id: str
+            payment_amount: _PaymentAmount
+            payee: _Payee
+
+        @dataclass
+        class _CheckoutMandate:
+            hash: str
+
+        async_mock_client.create_reservation.return_value = allow_response("rsv_async_e2e")
+        async_mock_client.commit_reservation.return_value = commit_success_response()
+
+        pm = _PaymentMandate(
+            transaction_id="ap2-tx-async-e2e",
+            payment_amount=_PaymentAmount(value="12.50", currency="USD"),
+            payee=_Payee(website="merchant.example"),
+        )
+        cm = _CheckoutMandate(hash="ch_async_e2e")
+        mandate = AP2Mandate.from_ap2(pm, cm, open_mandate_hash="omh_async_e2e")
+
+        async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme") as guard:
+            assert guard.reservation_id == "rsv_async_e2e"
+
+        body = async_mock_client.create_reservation.call_args[0][0]
+        assert body["subject"]["dimensions"]["ap2_transaction_id"] == "ap2-tx-async-e2e"
+        assert body["subject"]["dimensions"]["checkout_hash"] == "ch_async_e2e"
+        assert body["subject"]["dimensions"]["open_mandate_hash"] == "omh_async_e2e"
+        # open_mandate_hash present → lock scope shifts to open_mandate (AP2 §6).
+        assert ":open_mandate:" in body["idempotency_key"]

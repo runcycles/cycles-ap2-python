@@ -1,4 +1,9 @@
-"""Sync context manager wrapping a single AP2 payment moment in a Cycles reservation."""
+"""Context managers (sync and async) wrapping a single AP2 payment moment in a Cycles reservation.
+
+:class:`GuardedPayment` is the synchronous variant; :class:`AsyncGuardedPayment` is its
+asyncio counterpart. The two classes share idempotency, validation, mapping, and
+receipt logic via module-level helpers — only their I/O paths differ.
+"""
 
 from __future__ import annotations
 
@@ -461,11 +466,30 @@ def cycles_guard_payment(
 class AsyncGuardedPayment:
     """Async context manager: reserve on ``__aenter__``, commit/release on ``__aexit__``.
 
-    Behaviour matches :class:`GuardedPayment` exactly — same exception contract
-    (``AP2GuardDenied``, ``AP2DryRunResult``, ``AP2GuardCommitUncertain``,
-    ``AP2GuardCommitFailed``), same idempotency-key derivation, same commit-uncertainty
-    handling. Use this when your transport layer is :class:`AsyncCyclesClient` (FastAPI,
-    asyncio agents, anyio).
+    Behaviour matches :class:`GuardedPayment` exactly; use this when your transport
+    layer is :class:`AsyncCyclesClient` (FastAPI, asyncio agents, anyio).
+
+    Decision rules:
+      - Clean exit (no exception) → ``commit_reservation`` with the deterministic AP2
+        commit idempotency key (see :func:`runcycles_ap2.mapping.idempotency_key`).
+      - Exception inside ``async with`` block → ``release_reservation`` with reason
+        ``ap2_guard_failed:{ExcType}`` and the matching release idempotency key.
+      - Server ``Decision.DENY`` on enter → raises :class:`AP2GuardDenied`; real money
+        never moves and no commit/release is issued.
+      - ``dry_run=True`` → raises :class:`AP2DryRunResult` from ``__aenter__`` so the
+        ``async with`` body never executes (a body-level PSP call would otherwise move
+        money with no Cycles record).
+      - Post-PSP commit unknown-outcome (terminal codes, transport, 5xx, uncaught) →
+        raises :class:`AP2GuardCommitUncertain`. **No auto-release** — the commit POST
+        may have reached and settled Cycles before the failure was observed.
+      - Commit rejected with unrecognized 4xx code → raises
+        :class:`AP2GuardCommitFailed` after attempting a release; check the exception's
+        ``released`` / ``release_error`` attributes to know whether budget was recovered.
+      - Same consume-once key on a retry (``open_mandate_hash`` when present,
+        otherwise ``transaction_id``) → both attempts hit the same Cycles idempotency
+        bucket. Same payload replays the original reservation; divergent payload is
+        rejected by the server with ``IDEMPOTENCY_MISMATCH`` (surfaced as
+        :class:`AP2GuardDenied`).
     """
 
     def __init__(
@@ -540,7 +564,7 @@ class AsyncGuardedPayment:
         self._commit_metadata.update(fields)
 
     def abort(self, reason: str) -> None:
-        """Force a release on clean exit (instead of commit)."""
+        """Force a release on clean exit (instead of commit). Use for late-discovered failures."""
         self._aborted_reason = reason[:256]
 
     # -- async context manager protocol ----------------------------------
@@ -620,6 +644,8 @@ class AsyncGuardedPayment:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
+        # NOTE: dry-run never reaches __aexit__ — __aenter__ raises AP2DryRunResult
+        # before returning, so the `async with` body never executes.
         if self._reservation_id is None:
             return  # denial path already raised; nothing to clean up
 
