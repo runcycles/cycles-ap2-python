@@ -43,8 +43,13 @@ class AP2Mandate(BaseModel):
     amount_value: Annotated[str, Field(min_length=1, max_length=64)]
     currency: Annotated[str, Field(min_length=3, max_length=3)]
     payee_website: Annotated[str, Field(min_length=1, max_length=253)]
-    checkout_hash: Annotated[str, Field(max_length=256)] | None = None
-    open_mandate_hash: Annotated[str, Field(max_length=256)] | None = None
+    # ``checkout_hash`` and ``open_mandate_hash`` MUST be non-empty when present.
+    # An empty string would silently fall back to the transaction-id lock scope (the
+    # falsy check in :func:`consume_once_input`), which is data corruption disguised
+    # as the default. Pydantic enforces min_length=1; callers should pass ``None`` to
+    # mean "not present".
+    checkout_hash: Annotated[str, Field(min_length=1, max_length=256)] | None = None
+    open_mandate_hash: Annotated[str, Field(min_length=1, max_length=256)] | None = None
 
     def amount_micros(self) -> int:
         """Convert ``amount_value`` (decimal string in major units) to USD micro-cents.
@@ -155,7 +160,14 @@ class AP2Mandate(BaseModel):
 
         checkout_hash: str | None = None
         if checkout_mandate is not None:
-            checkout_hash = getattr(checkout_mandate, "hash", None) or getattr(checkout_mandate, "checkout_hash", None)
+            # Two upstream naming variants point at the same field, so fall back only
+            # when the first is genuinely missing (``None``) — NOT when it's an empty
+            # string. Empty-string `hash` is bad data; let it propagate so the model's
+            # ``min_length=1`` rejects it instead of silently masking the corruption
+            # via the falsy-``or`` short-circuit.
+            checkout_hash = getattr(checkout_mandate, "hash", None)
+            if checkout_hash is None:
+                checkout_hash = getattr(checkout_mandate, "checkout_hash", None)
 
         return cls(
             transaction_id=transaction_id,

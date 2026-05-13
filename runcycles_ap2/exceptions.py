@@ -52,13 +52,55 @@ class AP2DryRunResult(AP2GuardError):
         self.affected_scopes = affected_scopes
 
 
-class AP2GuardCommitFailed(AP2GuardError):
-    """Cycles rejected the commit AFTER the body ran (PSP may already have charged).
+class AP2GuardCommitUncertain(AP2GuardError):
+    """The commit POST ran after the PSP body but the outcome is unknown.
 
-    The wrapper attempts to release the reservation to recover budget; whether that
-    release succeeded is reported via :attr:`released`. The caller MUST treat this as
-    a reconciliation event regardless: PSP state and Cycles' view of the budget can
-    be out of sync.
+    Raised when ANY of these conditions hits the commit phase — in every case the
+    server may have mutated state before the failure was observed, so auto-release
+    is unsafe (it could undo a successful settle):
+
+      - ``RESERVATION_FINALIZED`` — a prior attempt already finalized the reservation;
+        usually a benign replay, but we can't verify "matching actuals" client-side.
+      - ``RESERVATION_EXPIRED`` — the TTL elapsed before we could commit. The server
+        reclaimed the budget, but the PSP body already ran, so the payment may have
+        moved without a Cycles settlement.
+      - ``IDEMPOTENCY_MISMATCH`` — a prior commit under this idempotency key carried
+        a different payload (often: different actuals across retries).
+      - **Transport error** (``error_code="TRANSPORT_ERROR"``) — the commit POST
+        never got a response (connection lost, timeout, DNS failure, etc.). Cycles
+        may have received and applied the commit before the wire died.
+      - **5xx server error** (``error_code="SERVER_ERROR"`` or the specific code) —
+        the server failed *after* possibly mutating state.
+      - **Uncaught exception during commit** (``error_code="COMMIT_RAISED"``) — the
+        client code raised before a response was processed; the chained ``__cause__``
+        is the original exception. May or may not have reached the server.
+
+    The caller MUST handle this exception — silently returning would let
+    unreconciled payment state propagate. Use ``error_code`` to distinguish the
+    flavors if you want different reconciliation paths.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+        request_id: str | None = None,
+        reservation_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.request_id = request_id
+        self.reservation_id = reservation_id
+
+
+class AP2GuardCommitFailed(AP2GuardError):
+    """Cycles **explicitly rejected** the commit request itself AFTER the body ran.
+
+    Used only for 4xx responses with an unrecognized error code (e.g. malformed
+    request, forbidden, etc.). The server saw the request and refused; releasing
+    the reservation is safe and is attempted before this exception is raised. The
+    PSP may still have moved money, so the caller MUST reconcile regardless.
 
     - ``released = True``: budget was returned, but PSP-side capture may still need
       reconciliation against your books.
@@ -66,9 +108,11 @@ class AP2GuardCommitFailed(AP2GuardError):
       (server-side rollback) AND PSP-side capture may need reconciliation. This is
       the worst case — escalate.
 
-    This exception is NOT raised for ``RESERVATION_FINALIZED`` / ``RESERVATION_EXPIRED``
-    / ``IDEMPOTENCY_MISMATCH`` — those indicate a prior attempt already finalized the
-    reservation and the current call is a benign replay.
+    This is NOT the right exception for unknown-outcome failures. Anything where the
+    commit POST might have reached and mutated Cycles before the failure — transport
+    errors, 5xx, terminal reservation statuses (``RESERVATION_FINALIZED`` /
+    ``RESERVATION_EXPIRED`` / ``IDEMPOTENCY_MISMATCH``), and uncaught exceptions —
+    is raised as :class:`AP2GuardCommitUncertain` with **no auto-release**.
     """
 
     def __init__(

@@ -21,7 +21,7 @@ class TestReleaseOnException:
         mock_client.release_reservation.assert_called_once()
         called_id, body = mock_client.release_reservation.call_args[0]
         assert called_id == "rsv_rel"
-        assert body["idempotency_key"] == idempotency_key("ap2-tx-001", "release", "RuntimeError")
+        assert body["idempotency_key"] == idempotency_key(mandate, "release", "RuntimeError")
         assert body["reason"].startswith("ap2_guard_failed:RuntimeError")
         mock_client.commit_reservation.assert_not_called()
 
@@ -34,7 +34,7 @@ class TestReleaseOnException:
                 raise ValueError("nope")
 
         body = mock_client.release_reservation.call_args[0][1]
-        assert body["idempotency_key"] == idempotency_key("ap2-tx-001", "release", "ValueError")
+        assert body["idempotency_key"] == idempotency_key(mandate, "release", "ValueError")
 
     def test_abort_releases_on_clean_exit(self, mock_client, mandate) -> None:
         mock_client.create_reservation.return_value = allow_response("rsv_abort")

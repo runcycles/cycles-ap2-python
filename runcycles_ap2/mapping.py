@@ -19,14 +19,16 @@ from runcycles_ap2._constants import (
     DIM_OPEN_MANDATE_HASH,
     DIM_RUN_ID,
     IDEMPOTENCY_PREFIX,
+    IDEMPOTENCY_SCOPE_OPEN_MANDATE,
+    IDEMPOTENCY_SCOPE_TRANSACTION,
     TRANSACTION_ID_HASH_LEN,
 )
 from runcycles_ap2._validation import validate_micros
 from runcycles_ap2.models import AP2Mandate
 
 
-def _hash_transaction_id(transaction_id: str) -> str:
-    """SHA-256 of the raw ``transaction_id``, hex-encoded and truncated.
+def _hash_input(value: str) -> str:
+    """SHA-256 of the input string, hex-encoded and truncated to 32 chars.
 
     Hashing guarantees:
       - fixed-length output regardless of input (avoids the 256-char header truncation
@@ -36,26 +38,56 @@ def _hash_transaction_id(transaction_id: str) -> str:
     Truncating to 32 hex chars preserves 128 bits of collision resistance — more than
     enough for an idempotency-key namespace scoped to a single tenant.
     """
-    digest = hashlib.sha256(transaction_id.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
     return digest[:TRANSACTION_ID_HASH_LEN]
 
 
-def idempotency_key(transaction_id: str, phase: str, suffix: str | None = None) -> str:
-    """Deterministic idempotency key: ``ap2:{sha256(tx)[:32]}:{phase}[:{suffix}]``.
+def consume_once_input(mandate: AP2Mandate) -> tuple[str, str]:
+    """Pick the lock scope + raw input for this mandate.
 
-    The phase suffix is ALWAYS preserved (fixed-length hash + short phase fit comfortably
-    inside the 256-char protocol cap). The same ``transaction_id`` reaching the same phase
-    from any retry, parallel worker, or process restart produces the same key — the
-    consume-once defense.
+    Returns ``(scope, raw_value)`` where:
+      - ``scope == "open_mandate"`` and ``raw_value == mandate.open_mandate_hash`` when
+        the mandate carries an open mandate hash. This makes every checkout derived from
+        the same open mandate collide on the same idempotency key — they all land in one
+        ``(tenant, endpoint, idempotency_key)`` bucket. Identical payloads replay the
+        original reservation; divergent payloads are rejected with
+        ``IDEMPOTENCY_MISMATCH``. Either way the second attempt cannot create a second
+        valid reservation. **This is the AP2 spec's normative defense** against an
+        autonomous agent presenting subsequent open mandates without a rejection
+        receipt (specification §6).
+      - ``scope == "tx"`` and ``raw_value == mandate.transaction_id`` otherwise. One
+        transaction == one payment attempt (the human-present / no-open-mandate case).
 
-    The raw ``transaction_id`` is still attached to ``Subject.dimensions["ap2_transaction_id"]``
-    on the Cycles wire payload for debug/audit; only the idempotency key uses the hash.
+    The scope is embedded in the idempotency key so the two namespaces cannot collide
+    server-side.
     """
-    base = f"{IDEMPOTENCY_PREFIX}:{_hash_transaction_id(transaction_id)}:{phase}"
+    if mandate.open_mandate_hash:
+        return (IDEMPOTENCY_SCOPE_OPEN_MANDATE, mandate.open_mandate_hash)
+    return (IDEMPOTENCY_SCOPE_TRANSACTION, mandate.transaction_id)
+
+
+def idempotency_key(mandate: AP2Mandate, phase: str, suffix: str | None = None) -> str:
+    """Deterministic idempotency key: ``ap2:{scope}:{sha256(input)[:32]}:{phase}[:{suffix}]``.
+
+    The scope (``open_mandate`` or ``tx``) is picked automatically from the mandate —
+    see :func:`consume_once_input` for the rules. The phase suffix is ALWAYS preserved
+    (the hash is fixed-length and short scope/phase tokens fit comfortably inside the
+    256-char protocol cap).
+
+    The raw ``transaction_id`` and ``open_mandate_hash`` are still attached to
+    ``Subject.dimensions`` on the Cycles wire payload for debug/audit; only the
+    idempotency key uses the hash.
+    """
+    scope, raw = consume_once_input(mandate)
+    base = f"{IDEMPOTENCY_PREFIX}:{scope}:{_hash_input(raw)}:{phase}"
     if suffix:
-        # Header-safe charset: alphanumeric, underscore, hyphen, dot. Anything else
-        # becomes ``_`` so the resulting key is always a valid HTTP header value.
-        safe_suffix = "".join(c if c.isalnum() or c in ("_", "-", ".") else "_" for c in suffix)
+        # Header-safe charset: ASCII alphanumeric, underscore, hyphen, dot. We use
+        # ``isascii() and isalnum()`` rather than ``isalnum()`` alone because Python's
+        # ``str.isalnum`` is Unicode-aware ("É".isalnum() is True), and HTTP header
+        # tokens per RFC 7230 must be ASCII. Non-ASCII chars (e.g. a localized
+        # exception class name like "Échec") would otherwise reach the wire and
+        # httpx would reject the request. Anything outside the safe set becomes "_".
+        safe_suffix = "".join(c if (c.isascii() and c.isalnum()) or c in ("_", "-", ".") else "_" for c in suffix)
         base = f"{base}:{safe_suffix[:64]}"
     return base
 
@@ -144,7 +176,7 @@ def build_reservation_body(
 ) -> dict[str, Any]:
     """Assemble the full reservation create request body, including deterministic idempotency key."""
     body: dict[str, Any] = {
-        "idempotency_key": idempotency_key(mandate.transaction_id, "reserve"),
+        "idempotency_key": idempotency_key(mandate, "reserve"),
         "subject": build_subject(
             mandate,
             run_id=run_id,
@@ -174,7 +206,11 @@ def build_commit_body(
     actual_micros: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Commit body with deterministic idempotency key derived from ``transaction_id``.
+    """Commit body with the deterministic idempotency key for this mandate.
+
+    The key is derived from the consume-once scope: ``open_mandate_hash`` when the
+    mandate carries one (HNP flows), otherwise ``transaction_id`` — see
+    :func:`idempotency_key` and :func:`consume_once_input`.
 
     ``actual_micros`` is validated when supplied (rejects ``bool``, ``float``, and
     out-of-range ints) so direct callers of this builder get the same protection as
@@ -185,7 +221,7 @@ def build_commit_body(
     else:
         amount = validate_micros(actual_micros, field="actual_micros")
     body: dict[str, Any] = {
-        "idempotency_key": idempotency_key(mandate.transaction_id, "commit"),
+        "idempotency_key": idempotency_key(mandate, "commit"),
         "actual": {"unit": "USD_MICROCENTS", "amount": amount},
     }
     if metadata:
@@ -201,6 +237,6 @@ def build_release_body(
 ) -> dict[str, Any]:
     """Release body with deterministic idempotency key per exception type."""
     return {
-        "idempotency_key": idempotency_key(mandate.transaction_id, "release", exception_type),
+        "idempotency_key": idempotency_key(mandate, "release", exception_type),
         "reason": reason[:256],
     }

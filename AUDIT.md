@@ -2,6 +2,89 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — positioning-review round 4 (ASCII suffix + empty-hash preservation + docstrings)
+
+**Author:** strategic/positioning review round 4 (PR #2 still in-flight)
+**Scope:** correctness polish + docstring sync
+
+1. **[P2] ASCII-only filter in idempotency-key suffix** — `safe_suffix` used `c.isalnum()`, but Python's `str.isalnum` is Unicode-aware (e.g. `"É".isalnum() == True`). A non-ASCII exception class name (or any non-ASCII suffix input) would have reached the `Idempotency-Key` HTTP header — RFC 7230 requires ASCII tokens, so httpx would reject the request. **Fix:** tighten the predicate to `(c.isascii() and c.isalnum()) or c in ("_", "-", ".")`. Regression test asserts the key is `isascii()` even when given a French-style suffix `"Échec"`.
+
+2. **[P3] `AP2Mandate.from_ap2` preserved empty `checkout_hash`** — the `or` short-circuit at `getattr(..., "hash", None) or getattr(..., "checkout_hash", None)` masked upstream `hash=""` as `None`, bypassing the model's `min_length=1` rejection. **Fix:** explicit `None` check on the first alternative; fall back only when the first attr is genuinely absent. Two regression tests: empty `hash=""` now raises `ValidationError` at construction; alternate naming (`checkout_hash` attr with no `hash` attr) still falls through correctly.
+
+3. **[P3] Stale docstrings refreshed** —
+   - `mapping.build_commit_body.__doc__` now references the consume-once scope rather than `transaction_id` exclusively.
+   - `AP2GuardCommitFailed.__doc__` rewritten: it covers only 4xx-explicit-rejection now; the previous paragraph that claimed it excludes `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` as "benign replay" was misleading — those raise `AP2GuardCommitUncertain` (a different exception), not a quiet no-op. The new docstring points readers at `AP2GuardCommitUncertain` for all unknown-outcome conditions.
+
+**Test posture after fixes:**
+- 110 tests (up from 107), 99.19% coverage.
+
+No public API additions; only behavior tightening on existing paths.
+
+## 2026-05-13 — positioning-review round 3 (P0 transport/5xx routing + P1 bare-exception wrap)
+
+**Author:** strategic/positioning review round 3 (PR #2 still in-flight)
+**Scope:** completing the commit-uncertain contract for all post-PSP failure modes
+
+1. **[P0] Transport errors and 5xx responses on commit are now uncertain (no release)** — previously they fell into the "unrecognized rejection" branch, which called `_handle_release` and raised `AP2GuardCommitFailed` with the message "reservation released" regardless. Wrong: the commit POST may have reached Cycles and mutated state before the failure was observed, so auto-release risks undoing a successful settle. New branch ordering in `_handle_commit`: success → transport/5xx → terminal codes → 4xx unrecognized. The first three all raise `AP2GuardCommitUncertain` with no release; only 4xx-with-unrecognized-code still releases. Synthetic `error_code` values: `TRANSPORT_ERROR` for transport-level failures, `SERVER_ERROR` for 5xx without a parseable code (specific codes propagate when present).
+
+2. **[P1] Bare exceptions during commit POST now surface as commit-uncertain** — the `try / except Exception / raise` block re-raised the raw exception, losing the `reservation_id` and bypassing the reconciliation contract. Now wrapped as `AP2GuardCommitUncertain(error_code="COMMIT_RAISED", reservation_id=...) from exc` so the caller still gets the standard fields and the original exception is preserved via `__cause__`.
+
+3. **Docstring updated** — `AP2GuardCommitUncertain.__doc__` enumerates all the new conditions and how to distinguish them via `error_code`.
+
+**Test posture after fixes:**
+- 107 tests (up from 103), 99.18% coverage.
+
+**Four new regression tests:**
+- `test_commit_5xx_raises_uncertain_no_release`
+- `test_commit_5xx_without_body_uses_synthetic_code`
+- `test_commit_transport_error_raises_uncertain_no_release`
+- `test_commit_raises_exception_surfaces_as_uncertain`
+
+No public API additions; only behavior shift inside `_handle_commit` and an expanded contract on the existing `AP2GuardCommitUncertain`.
+
+## 2026-05-13 — positioning-review follow-ups (wording accuracy + empty-hash guard)
+
+**Author:** strategic/positioning review round 2 (PR #2 in-flight)
+**Scope:** documentation accuracy, additional regression coverage, defensive validation
+
+1. **Reworded "collapses onto one reservation"** — earlier wording implied server-side merging when the actual semantics are: same key + same payload replays the original; same key + divergent payload returns `409 IDEMPOTENCY_MISMATCH` (surfaced as `AP2GuardDenied`). Both prevent a second valid reservation, but the mechanism differs. README, AUDIT, and two test docstrings now describe the actual contract. The consume-once defense itself is unchanged.
+
+2. **Stale `transaction_id`-only retry wording** — `GuardedPayment.__doc__` and the README lifecycle table still implied the retry/lock key is always `transaction_id`. Generalized to "consume-once key (`open_mandate_hash` when present, otherwise `transaction_id`)".
+
+3. **New regression test for IDEMPOTENCY_MISMATCH on second reserve** — `test_open_mandate_divergent_payload_reserve_mismatch_raises_denied` exercises the second half of the consume-once contract: same open mandate hash, distinct transaction_id, first reserve allows, second reserve gets 409 from server → `AP2GuardDenied(reason_code="IDEMPOTENCY_MISMATCH")`. Documents the actual server semantics for divergent payloads sharing the open-mandate scope.
+
+4. **Reject empty `open_mandate_hash` / `checkout_hash`** — pydantic `min_length=1` on both fields. Previously an empty string would pass model validation, then `consume_once_input`'s truthy check would silently fall back to the `tx` scope — data corruption disguised as the default. Now fails fast at model construction. Two new tests cover the rejection paths.
+
+**Test posture after fixes:**
+- 103 tests (up from 100), 98.35% coverage.
+
+No public API additions in this round.
+
+## 2026-05-13 — positioning-review fixes (P0-A consume-once, P0-B commit-uncertain)
+
+**Author:** strategic/positioning review response (still v0.1.0; not yet on PyPI)
+**Scope:** consume-once correctness, post-PSP failure visibility, README accuracy
+
+1. **[P0-A] Open-mandate consume-once locking** — earlier rounds keyed idempotency on `transaction_id` only. That breaks the AP2 spec's normative defense (specification §6) against an autonomous agent presenting subsequent open mandates without a rejection receipt: two distinct transactions derived from the same open mandate would produce different idempotency keys and BOTH would be authorized. **Fix:** when `AP2Mandate.open_mandate_hash` is present, key the lock on `open_mandate_hash` instead of `transaction_id`. Scope namespace embedded in the key so the two buckets never collide server-side:
+   - human-not-present: `ap2:open_mandate:{sha256(open_mandate_hash)[:32]}:{phase}[:{suffix}]`
+   - default / human-present: `ap2:tx:{sha256(transaction_id)[:32]}:{phase}[:{suffix}]`
+   New `mapping.consume_once_input()` returns the (scope, raw_value) pair. The `idempotency_key()` function signature changed from `(transaction_id: str, ...)` to `(mandate: AP2Mandate, ...)` to enable automatic scope selection. **Wire-shape change** — pre-PyPI so no migration. New test class `TestIdempotencyKeyOpenMandateScope` + `test_open_mandate_overuse_shares_idempotency_bucket_across_transactions` cover the regression (the test was renamed in the follow-up wording pass to avoid the "collapse" overclaim).
+
+2. **[P0-B] Post-PSP commit failures now raise instead of silently logging** — `RESERVATION_FINALIZED`, `RESERVATION_EXPIRED`, and `IDEMPOTENCY_MISMATCH` previously returned silently with a warning log; callers only saw `guard.committed == False`. After the PSP body has run, any of these is a reconciliation event the caller MUST handle. `RESERVATION_EXPIRED` in particular is dangerous: the PSP may have charged while Cycles reclaimed the budget on TTL. **Fix:** new `AP2GuardCommitUncertain` exception (carries `error_code` + `request_id` + `reservation_id`); raised from `_handle_commit` for all three terminal-status codes. Still no auto-release (a prior commit may already have settled). Existing tests that asserted silent behavior were flipped to expect the raise; new `RESERVATION_EXPIRED` test added.
+
+3. **README polish** — added "Independent project — not affiliated with Google" disclaimer; added "What this does NOT do" section (no signature verification, no mandate creation, etc.); softened "any AP2-compatible SDK" wording to "AP2-style PaymentMandate objects via a small adapter layer"; tightened headline value-prop with a bulleted "prevent these failure modes" list; updated lifecycle table for commit-uncertain raise; updated idempotency key table to show the dual-scope behavior.
+
+4. **Real AP2-shaped adapter test** — new `tests/test_ap2_shape_adapter.py` uses local dataclasses matching the upstream AP2 sample-type layout (`PaymentMandate`, `CheckoutMandate`, `Payee`, `PaymentAmount`) so `AP2Mandate.from_ap2()` is exercised against shape closer to real AP2 SDK objects, not just our own internal fakes. If upstream renames a field, this test fails first.
+
+**Test posture after fixes:**
+- 100 tests (up from 90), 98.35% coverage.
+
+**Public API additions:**
+- `AP2GuardCommitUncertain` exception class (exported)
+
+**Wire-shape change (acceptable because pre-PyPI):**
+- idempotency keys now include a scope namespace: `ap2:tx:...` or `ap2:open_mandate:...` (was `ap2:...`)
+
 ## 2026-05-13 — sixth-round review fix (P2 non-int amount types)
 
 **Author:** code-review response on PR #1 (round 6)

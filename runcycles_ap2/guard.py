@@ -12,7 +12,7 @@ from runcycles.models import Decision, ReservationCreateResponse
 
 from runcycles_ap2._constants import DEFAULT_ACTION_KIND, DEFAULT_OVERAGE_POLICY, DEFAULT_TTL_MS
 from runcycles_ap2._validation import validate_micros
-from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardDenied
+from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardCommitUncertain, AP2GuardDenied
 from runcycles_ap2.mapping import (
     build_action,
     build_commit_body,
@@ -41,8 +41,11 @@ class GuardedPayment:
       - Commit rejected with unrecognized code → raises :class:`AP2GuardCommitFailed`
         after attempting a release; check the exception's ``released`` /
         ``release_error`` attributes to know whether budget was recovered.
-      - Same ``transaction_id`` on a retry → server returns the original reservation
-        (idempotent replay) because the idempotency key is deterministic.
+      - Same consume-once key on a retry (``open_mandate_hash`` when present,
+        otherwise ``transaction_id``) → both attempts hit the same Cycles idempotency
+        bucket. Same payload replays the original reservation; divergent payload is
+        rejected by the server with ``IDEMPOTENCY_MISMATCH`` (surfaced as
+        :class:`AP2GuardDenied`).
     """
 
     def __init__(
@@ -233,9 +236,20 @@ class GuardedPayment:
         )
         try:
             response = self._client.commit_reservation(self._reservation_id, body)
-        except Exception:
+        except Exception as exc:
+            # Post-PSP exception during the commit POST itself. The request may have
+            # reached Cycles and mutated state before the exception was raised, so the
+            # commit outcome is unknown. NEVER auto-release — that would risk undoing
+            # a successful settle. Surface as commit-uncertain so the caller cannot
+            # miss the reconciliation event; chain the original via `from exc`.
             logger.exception("AP2 commit raised: tx=%s", self._mandate.transaction_id)
-            raise
+            raise AP2GuardCommitUncertain(
+                f"AP2 commit raised before a response was received for transaction "
+                f"{self._mandate.transaction_id}: {type(exc).__name__}: {exc}. "
+                "Commit outcome is unknown; no release was attempted.",
+                error_code="COMMIT_RAISED",
+                reservation_id=self._reservation_id,
+            ) from exc
 
         if response.is_success:
             self._committed = True
@@ -251,20 +265,57 @@ class GuardedPayment:
         error = response.get_error_response()
         error_code = error.error_code.value if (error and error.error_code) else None
         request_id = error.request_id if error else None
-        if error_code in ("RESERVATION_FINALIZED", "RESERVATION_EXPIRED", "IDEMPOTENCY_MISMATCH"):
-            # Benign replay: a previous attempt already finalized the reservation. The
-            # caller's payment record is correct from that prior attempt; nothing to do.
+
+        # Transport-level or server-side (5xx) failure. The commit POST may have
+        # reached the server and mutated state before the response was lost or the
+        # server errored out. We CANNOT tell whether the commit succeeded, so we
+        # MUST NOT auto-release — that risks undoing a successful settle. Same
+        # uncertain semantics as the terminal-status codes below.
+        if response.is_transport_error or response.is_server_error:
+            synthetic_code = error_code or ("TRANSPORT_ERROR" if response.is_transport_error else "SERVER_ERROR")
             logger.warning(
-                "AP2 commit returned %s (no release): id=%s, tx=%s",
+                "AP2 commit %s failure (raising uncertain): id=%s, tx=%s, status=%d, code=%s",
+                "transport" if response.is_transport_error else "server",
+                self._reservation_id,
+                self._mandate.transaction_id,
+                response.status,
+                synthetic_code,
+            )
+            raise AP2GuardCommitUncertain(
+                f"AP2 commit failed at the transport/server layer for transaction "
+                f"{self._mandate.transaction_id} (status={response.status}, code={synthetic_code}). "
+                "Commit may have reached Cycles before the failure; no release was attempted.",
+                error_code=synthetic_code,
+                request_id=request_id,
+                reservation_id=self._reservation_id,
+            )
+
+        if error_code in ("RESERVATION_FINALIZED", "RESERVATION_EXPIRED", "IDEMPOTENCY_MISMATCH"):
+            # The reservation is in a terminal state on the server. We do NOT auto-release
+            # (that would undo a prior successful commit), but we also do NOT return
+            # silently — after the PSP body has run, any of these is a reconciliation
+            # event the caller MUST see. RESERVATION_EXPIRED in particular is dangerous:
+            # the PSP may have charged while Cycles reclaimed the budget on TTL.
+            logger.warning(
+                "AP2 commit returned %s (terminal, raising uncertain): id=%s, tx=%s",
                 error_code,
                 self._reservation_id,
                 self._mandate.transaction_id,
             )
-            return
+            raise AP2GuardCommitUncertain(
+                f"AP2 commit returned {error_code} for transaction {self._mandate.transaction_id}. "
+                "Reservation is in a terminal state; PSP state may need reconciliation. "
+                "No release was attempted (a prior commit may already have settled).",
+                error_code=error_code,
+                request_id=request_id,
+                reservation_id=self._reservation_id,
+            )
 
-        # Unrecognized commit rejection. The PSP may already have moved money, so we
-        # release the budget and raise — the caller MUST reconcile, and a silent
-        # `guard.committed == False` was too easy to miss.
+        # 4xx with an unrecognized error code: the server explicitly rejected the
+        # commit request itself (malformed, forbidden, etc.). Releasing is safe here
+        # — the server saw the request and refused, so no mutation occurred on its
+        # side. The PSP may still have moved money, hence we raise AP2GuardCommitFailed
+        # for explicit reconciliation.
         logger.warning(
             "AP2 commit rejected (releasing): id=%s, tx=%s, code=%s",
             self._reservation_id,
