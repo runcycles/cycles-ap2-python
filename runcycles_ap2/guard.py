@@ -20,8 +20,8 @@ from runcycles_ap2._constants import DEFAULT_ACTION_KIND, DEFAULT_OVERAGE_POLICY
 from runcycles_ap2._validation import validate_micros
 from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardCommitUncertain, AP2GuardDenied
 from runcycles_ap2.mapping import (
-    build_action,
     build_commit_body,
+    build_receipt_policy_keys,
     build_release_body,
     build_reservation_body,
 )
@@ -387,7 +387,7 @@ class GuardedPayment:
     def _build_receipt(self) -> None:
         assert self._reservation_id is not None
         assert self._decision is not None
-        policy_keys = build_action(self._mandate, action_kind=self._action_kind)["policy_keys"]
+        policy_keys = build_receipt_policy_keys(self._mandate)
         committed_micros = self._actual_micros if self._actual_micros is not None else self._mandate.amount_micros()
         raw_psp_ref = self._commit_metadata.get("psp_ref")
         psp_ref = raw_psp_ref if isinstance(raw_psp_ref, str) else None
@@ -824,7 +824,7 @@ class AsyncGuardedPayment:
         # function) so attribute access stays clean and the two classes look symmetric.
         assert self._reservation_id is not None
         assert self._decision is not None
-        policy_keys = build_action(self._mandate, action_kind=self._action_kind)["policy_keys"]
+        policy_keys = build_receipt_policy_keys(self._mandate)
         committed_micros = self._actual_micros if self._actual_micros is not None else self._mandate.amount_micros()
         raw_psp_ref = self._commit_metadata.get("psp_ref")
         psp_ref = raw_psp_ref if isinstance(raw_psp_ref, str) else None

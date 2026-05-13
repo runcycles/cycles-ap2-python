@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-13
+
+### Changed (wire shape)
+- AP2 routing context (`host`, `currency`, `payment_protocol`) moved from `Action.policy_keys` to `Subject.dimensions["payee_website" / "payment_currency" / "payment_protocol"]`. The v0.1/0.2 placement on `Action.policy_keys` was per the `cycles-action-kinds-v0.1.26.yaml` extension; production `cycles-server` v0.1.25.x doesn't yet implement that extension and rejected the field with `400 Malformed request body`. v0.3 ships these values on `Subject.dimensions` (part of the base protocol), so the wrapper works against current production servers. The client-side `RuntimeAuthorityReceipt.policy_keys` still carries the canonical shape — dashboards / dispute evidence / audit pipelines that consumed the receipt are unchanged.
+
+### Unchanged
+- Public Python API (`cycles_guard_payment`, `cycles_guard_payment_async`, all exception classes, all class attributes, `AP2Mandate`, `RuntimeAuthorityReceipt`).
+- Exception contract.
+- Idempotency-key derivation (still `ap2:open_mandate:{...}` or `ap2:tx:{...}`).
+- All v0.2.0 features (async, commit-uncertainty handling, cancellation handling).
+
+### Still planned for v0.4+
+- Multi-currency (still raises `AP2CurrencyError` on non-USD).
+- `payment.refund` convenience helper.
+- Opt-in flag to re-emit `Action.policy_keys` for servers that implement the v0.1.26 extension.
+- Server-verifiable runtime-authority receipt (requires `cycles-protocol` signed-receipt field).
+
 ## [0.2.0] — 2026-05-13
 
 ### Added

@@ -2,6 +2,36 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — v0.3.0 — wire-shape change: AP2 routing moves to Subject.dimensions
+
+**Author:** v0.3.0 release, prompted by a live integration smoke test against `cycles-server:0.1.25.18`
+**Scope:** wire payload; public Python API unchanged; exception contract unchanged
+
+**Trigger.** The v0.2.0 integration suite ran against a real `cycles-server` for the first time. All five tests failed with `AP2GuardDenied: AP2 reservation failed for transaction ...`. Direct curl reproduced the cause: the server rejected the reserve body with `400 INVALID_REQUEST: Malformed request body`.
+
+**Root cause.** The wrapper sent AP2 routing context (`host`, `currency`, `payment_protocol`) nested inside `Action.policy_keys` — the shape defined in the v0.1.26 protocol extension (`cycles-action-kinds-v0.1.26.yaml`). Production `cycles-server` (`0.1.25.18` at time of audit) implements only the base `cycles-protocol-v0.yaml` `Action` schema, which has `additionalProperties: false` and lists only `kind` / `name` / `tags`. The `policy_keys` field was rejected as unknown. The unit-test suite (147 tests, all `MagicMock`-based) could not catch this — every mock accepts any shape we hand it.
+
+**Fix.** v0.3 moves the three routing values from `Action.policy_keys` to `Subject.dimensions`:
+
+  - `Subject.dimensions["payee_website"]` (was `Action.policy_keys.host`)
+  - `Subject.dimensions["payment_currency"]` (was `Action.policy_keys.custom["currency"]`)
+  - `Subject.dimensions["payment_protocol"]` (was `Action.policy_keys.custom["payment_protocol"]`; constant `"ap2"`)
+
+`Subject.dimensions` is part of the base protocol (already used by v0.1/0.2 for `ap2_transaction_id`, `checkout_hash`, `open_mandate_hash`, `run_id`), so the new fields ship over the wire on every server version the wrapper supports.
+
+The client-side `RuntimeAuthorityReceipt.policy_keys` field still carries the canonical shape (`{host, custom: {payment_protocol, payment_currency}}`) — dashboards, dispute evidence, and any audit pipelines that consumed the receipt are unchanged. The receipt builder constructs it from `runcycles_ap2.mapping.build_receipt_policy_keys(mandate)` (a new internal helper) rather than reading it off the action body.
+
+**What this is NOT:**
+- Not a public Python API change. `cycles_guard_payment(...)`, `cycles_guard_payment_async(...)`, all exception classes, all class attributes are unchanged.
+- Not a protocol change. We removed a v0.1.26-extension dependency from the wire payload; the base protocol is sufficient.
+- Not a permanent ban on `Action.policy_keys`. When `cycles-server` ships the v0.1.26 extension and operators want first-class policy routing, the wrapper can re-emit `Action.policy_keys` via a future opt-in flag without breaking the dimensions-based path.
+
+**Test posture after change:**
+- 148 unit tests (was 147; +1 net for the new `TestBuildReceiptPolicyKeys` class, several tests reframed). 99.21% coverage.
+- 5 integration tests in `tests/integration/` (skipped at collection time when `CYCLES_BASE_URL` is unset; verified locally to pass against a fresh `cycles-server` v0.1.25.18 quickstart stack after this change).
+
+**Wire-shape change** is the headline. Existing wire callers that were running against a hypothetical v0.1.26-extension server would see their reservations land in the same effective state — same `Subject` scope, same idempotency key, same commit / release semantics — just with the routing fields under a different field. Anyone running against a real production server was hitting `400`s and could not have been depending on the old shape.
+
 ## 2026-05-13 — live integration smoke tests (post-v0.2.0)
 
 **Author:** post-release hygiene

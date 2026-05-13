@@ -124,7 +124,11 @@ class TestCleanCommit:
 
         mock_client.commit_reservation.assert_not_called()
 
-    def test_reserve_body_carries_policy_keys(self, mock_client, mandate) -> None:
+    def test_reserve_body_carries_ap2_routing_dimensions(self, mock_client, mandate) -> None:
+        # v0.3 wire-shape: AP2 routing context (payee_website / payment_currency /
+        # payment_protocol) ships on Subject.dimensions, NOT on Action.policy_keys.
+        # The v0.1.25.x cycles-server base Action schema has additionalProperties:
+        # false, so the old shape triggered a 400 against production servers.
         mock_client.create_reservation.return_value = allow_response()
         mock_client.commit_reservation.return_value = commit_success_response()
 
@@ -133,7 +137,11 @@ class TestCleanCommit:
 
         body = mock_client.create_reservation.call_args[0][0]
         assert body["idempotency_key"] == idempotency_key(mandate, "reserve")
-        assert body["action"]["policy_keys"]["host"] == "merchant.example"
-        assert body["action"]["policy_keys"]["custom"]["payment_protocol"] == "ap2"
+        # Routing context moved to dimensions:
+        assert body["subject"]["dimensions"]["payee_website"] == "merchant.example"
+        assert body["subject"]["dimensions"]["payment_currency"] == "USD"
+        assert body["subject"]["dimensions"]["payment_protocol"] == "ap2"
         assert body["subject"]["dimensions"]["ap2_transaction_id"] == "ap2-tx-001"
+        # Regression: Action must NOT carry policy_keys on the wire any more.
+        assert "policy_keys" not in body["action"]
         assert body["overage_policy"] == "REJECT"
