@@ -34,53 +34,97 @@ def _expected_hash(tx: str) -> str:
 
 
 class TestIdempotencyKey:
-    def test_reserve_phase(self) -> None:
-        h = _expected_hash("ap2-tx-001")
-        assert idempotency_key("ap2-tx-001", "reserve") == f"ap2:{h}:reserve"
+    """Default scope: transaction-id (when no open_mandate_hash)."""
 
-    def test_commit_phase(self) -> None:
+    def test_reserve_phase_tx_scope(self) -> None:
         h = _expected_hash("ap2-tx-001")
-        assert idempotency_key("ap2-tx-001", "commit") == f"ap2:{h}:commit"
+        assert idempotency_key(make_mandate(), "reserve") == f"ap2:tx:{h}:reserve"
 
-    def test_release_with_suffix(self) -> None:
+    def test_commit_phase_tx_scope(self) -> None:
         h = _expected_hash("ap2-tx-001")
-        assert idempotency_key("ap2-tx-001", "release", "RuntimeError") == f"ap2:{h}:release:RuntimeError"
+        assert idempotency_key(make_mandate(), "commit") == f"ap2:tx:{h}:commit"
+
+    def test_release_with_suffix_tx_scope(self) -> None:
+        h = _expected_hash("ap2-tx-001")
+        assert idempotency_key(make_mandate(), "release", "RuntimeError") == f"ap2:tx:{h}:release:RuntimeError"
 
     def test_release_sanitizes_unsafe_chars(self) -> None:
         # Whitespace, slashes, and other header-unsafe chars get replaced with `_`.
+        m = make_mandate(transaction_id="tx")
         h = _expected_hash("tx")
-        key = idempotency_key("tx", "release", "some/bad value")
-        assert key == f"ap2:{h}:release:some_bad_value"
+        key = idempotency_key(m, "release", "some/bad value")
+        assert key == f"ap2:tx:{h}:release:some_bad_value"
 
     def test_long_transaction_id_does_not_drop_phase(self) -> None:
         # P1 regression: a 256-char tx_id used to overflow the cap and have the phase
-        # suffix sliced off. Now the hash is fixed-length, so all phases stay distinct.
-        long_tx = "x" * 256
-        reserve = idempotency_key(long_tx, "reserve")
-        commit = idempotency_key(long_tx, "commit")
-        release = idempotency_key(long_tx, "release", "RuntimeError")
+        # suffix sliced off. The fixed-length hash keeps phases distinct.
+        m = make_mandate(transaction_id="x" * 256)
+        reserve = idempotency_key(m, "reserve")
+        commit = idempotency_key(m, "commit")
+        release = idempotency_key(m, "release", "RuntimeError")
         assert reserve.endswith(":reserve")
         assert commit.endswith(":commit")
         assert release.endswith(":release:RuntimeError")
         assert reserve != commit != release
 
     def test_distinct_long_tx_ids_yield_distinct_keys(self) -> None:
-        # P1 regression: two tx_ids sharing the first 252 chars used to collide on
-        # reserve. SHA-256 distinguishes them.
-        a = ("y" * 252) + "AAAA"
-        b = ("y" * 252) + "BBBB"
+        # P1 regression: two tx_ids sharing the first 252 chars used to collide on reserve.
+        a = make_mandate(transaction_id=("y" * 252) + "AAAA")
+        b = make_mandate(transaction_id=("y" * 252) + "BBBB")
         assert idempotency_key(a, "reserve") != idempotency_key(b, "reserve")
 
     def test_unsafe_transaction_id_chars_do_not_leak_to_header(self) -> None:
-        # P1 regression: tx_ids containing whitespace / control bytes used to reach the
-        # Idempotency-Key header. The hash output is hex only — header-safe by design.
-        key = idempotency_key("tx with\nnewline\tand\r\x00null", "reserve")
+        # P1 regression: tx_ids with whitespace / control bytes used to reach the header.
+        m = make_mandate(transaction_id="tx with\nnewline\tand\r\x00null")
+        key = idempotency_key(m, "reserve")
         assert "\n" not in key and "\t" not in key and "\r" not in key and "\x00" not in key
         assert all(c.isalnum() or c in (":", "_", "-", ".") for c in key)
 
     def test_key_length_bounded(self) -> None:
-        # Hash + phase + suffix always fits inside the protocol's 256-char cap.
-        assert len(idempotency_key("x" * 1024, "release", "x" * 1024)) <= 256
+        # Hash + phase + suffix always fits inside the protocol's 256-char cap, even
+        # at the longest possible transaction_id (model max 256) and a max-length
+        # exception-type suffix.
+        m = make_mandate(transaction_id="x" * 256)
+        assert len(idempotency_key(m, "release", "x" * 256)) <= 256
+
+
+class TestIdempotencyKeyOpenMandateScope:
+    """P0-A: when ``open_mandate_hash`` is present, the lock scope shifts to it.
+
+    This is the AP2-spec consume-once boundary for human-not-present flows: every
+    checkout derived from the same open mandate must collapse onto one reservation,
+    even when their transaction_ids differ.
+    """
+
+    def test_open_mandate_scope_used_when_hash_present(self) -> None:
+        m = make_mandate(open_mandate_hash="omh_abc")
+        h = _expected_hash("omh_abc")
+        # Scope namespace is `open_mandate`, hash input is the open_mandate_hash —
+        # the transaction_id is NOT mixed in here (it'd defeat the whole point).
+        assert idempotency_key(m, "reserve") == f"ap2:open_mandate:{h}:reserve"
+        assert idempotency_key(m, "commit") == f"ap2:open_mandate:{h}:commit"
+
+    def test_different_transactions_same_open_mandate_share_key(self) -> None:
+        # Two checkouts spawned from one open mandate must collide on the reserve key
+        # so server-side dedup collapses them onto a single reservation.
+        a = make_mandate(transaction_id="ap2-tx-AAA", open_mandate_hash="omh_shared")
+        b = make_mandate(transaction_id="ap2-tx-BBB", open_mandate_hash="omh_shared")
+        assert idempotency_key(a, "reserve") == idempotency_key(b, "reserve")
+        assert idempotency_key(a, "commit") == idempotency_key(b, "commit")
+
+    def test_tx_and_open_mandate_namespaces_never_collide(self) -> None:
+        # Even if some pathological caller arranged for transaction_id and
+        # open_mandate_hash to hash to the same value, the scope namespace ("tx" vs
+        # "open_mandate") embedded in the key keeps them in distinct dedup buckets.
+        tx_only = make_mandate(transaction_id="same-input")
+        omh_only = make_mandate(transaction_id="other-tx", open_mandate_hash="same-input")
+        assert idempotency_key(tx_only, "reserve") != idempotency_key(omh_only, "reserve")
+
+    def test_open_mandate_scope_takes_precedence_over_transaction_id(self) -> None:
+        # When both are present, open_mandate wins — that's the consume-once boundary.
+        m = make_mandate(transaction_id="ap2-tx-001", open_mandate_hash="omh_xyz")
+        assert "open_mandate" in idempotency_key(m, "reserve")
+        assert _expected_hash("ap2-tx-001") not in idempotency_key(m, "reserve")
 
 
 class TestBuildSubject:
@@ -322,7 +366,7 @@ class TestBuildReservationBody:
             overage_policy="REJECT",
             dry_run=False,
         )
-        assert body["idempotency_key"] == f"ap2:{_expected_hash('ap2-tx-001')}:reserve"
+        assert body["idempotency_key"] == f"ap2:tx:{_expected_hash('ap2-tx-001')}:reserve"
         assert body["subject"]["tenant"] == "acme"
         assert body["action"]["kind"] == "payment.charge"
         assert body["estimate"] == {"unit": "USD_MICROCENTS", "amount": 19_900_000_000}
@@ -370,7 +414,7 @@ class TestBuildCommitBody:
     def test_defaults_to_mandate_amount(self) -> None:
         body = build_commit_body(make_mandate())
         assert body["actual"]["amount"] == 19_900_000_000
-        assert body["idempotency_key"] == f"ap2:{_expected_hash('ap2-tx-001')}:commit"
+        assert body["idempotency_key"] == f"ap2:tx:{_expected_hash('ap2-tx-001')}:commit"
 
     def test_actual_override(self) -> None:
         body = build_commit_body(make_mandate(), actual_micros=5_000_000_000)
@@ -400,7 +444,7 @@ class TestBuildCommitBody:
 class TestBuildReleaseBody:
     def test_with_exception_type(self) -> None:
         body = build_release_body(make_mandate(), reason="fail", exception_type="RuntimeError")
-        assert body["idempotency_key"] == f"ap2:{_expected_hash('ap2-tx-001')}:release:RuntimeError"
+        assert body["idempotency_key"] == f"ap2:tx:{_expected_hash('ap2-tx-001')}:release:RuntimeError"
         assert body["reason"] == "fail"
 
     def test_reason_truncated(self) -> None:

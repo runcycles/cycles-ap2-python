@@ -12,7 +12,7 @@ from runcycles.models import Decision, ReservationCreateResponse
 
 from runcycles_ap2._constants import DEFAULT_ACTION_KIND, DEFAULT_OVERAGE_POLICY, DEFAULT_TTL_MS
 from runcycles_ap2._validation import validate_micros
-from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardDenied
+from runcycles_ap2.exceptions import AP2DryRunResult, AP2GuardCommitFailed, AP2GuardCommitUncertain, AP2GuardDenied
 from runcycles_ap2.mapping import (
     build_action,
     build_commit_body,
@@ -252,15 +252,25 @@ class GuardedPayment:
         error_code = error.error_code.value if (error and error.error_code) else None
         request_id = error.request_id if error else None
         if error_code in ("RESERVATION_FINALIZED", "RESERVATION_EXPIRED", "IDEMPOTENCY_MISMATCH"):
-            # Benign replay: a previous attempt already finalized the reservation. The
-            # caller's payment record is correct from that prior attempt; nothing to do.
+            # The reservation is in a terminal state on the server. We do NOT auto-release
+            # (that would undo a prior successful commit), but we also do NOT return
+            # silently — after the PSP body has run, any of these is a reconciliation
+            # event the caller MUST see. RESERVATION_EXPIRED in particular is dangerous:
+            # the PSP may have charged while Cycles reclaimed the budget on TTL.
             logger.warning(
-                "AP2 commit returned %s (no release): id=%s, tx=%s",
+                "AP2 commit returned %s (terminal, raising uncertain): id=%s, tx=%s",
                 error_code,
                 self._reservation_id,
                 self._mandate.transaction_id,
             )
-            return
+            raise AP2GuardCommitUncertain(
+                f"AP2 commit returned {error_code} for transaction {self._mandate.transaction_id}. "
+                "Reservation is in a terminal state; PSP state may need reconciliation. "
+                "No release was attempted (a prior commit may already have settled).",
+                error_code=error_code,
+                request_id=request_id,
+                reservation_id=self._reservation_id,
+            )
 
         # Unrecognized commit rejection. The PSP may already have moved money, so we
         # release the budget and raise — the caller MUST reconcile, and a silent

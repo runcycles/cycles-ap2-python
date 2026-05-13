@@ -52,6 +52,38 @@ class AP2DryRunResult(AP2GuardError):
         self.affected_scopes = affected_scopes
 
 
+class AP2GuardCommitUncertain(AP2GuardError):
+    """Cycles returned a terminal status for this reservation on commit.
+
+    Raised when the server replies with one of:
+      - ``RESERVATION_FINALIZED`` — a prior attempt already finalized the reservation;
+        usually a benign replay, but we can't verify "matching actuals" client-side.
+      - ``RESERVATION_EXPIRED`` — the TTL elapsed before we could commit. The server
+        reclaimed the budget on the cycles side, but the PSP body has already run, so
+        the payment may have moved without a Cycles settlement.
+      - ``IDEMPOTENCY_MISMATCH`` — a prior commit under this idempotency key carried
+        a different payload (often: different actuals across retries).
+
+    After the PSP body has executed, any of these is a reconciliation event. We do
+    NOT auto-release for them (a previous successful commit would be undone). The
+    caller MUST handle this exception — silently returning would let unreconciled
+    payment state propagate.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+        request_id: str | None = None,
+        reservation_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.request_id = request_id
+        self.reservation_id = reservation_id
+
+
 class AP2GuardCommitFailed(AP2GuardError):
     """Cycles rejected the commit AFTER the body ran (PSP may already have charged).
 

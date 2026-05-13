@@ -2,6 +2,31 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — positioning-review fixes (P0-A consume-once, P0-B commit-uncertain)
+
+**Author:** strategic/positioning review response (still v0.1.0; not yet on PyPI)
+**Scope:** consume-once correctness, post-PSP failure visibility, README accuracy
+
+1. **[P0-A] Open-mandate consume-once locking** — earlier rounds keyed idempotency on `transaction_id` only. That breaks the AP2 spec's normative defense (specification §6) against an autonomous agent presenting subsequent open mandates without a rejection receipt: two distinct transactions derived from the same open mandate would produce different idempotency keys and BOTH would be authorized. **Fix:** when `AP2Mandate.open_mandate_hash` is present, key the lock on `open_mandate_hash` instead of `transaction_id`. Scope namespace embedded in the key so the two buckets never collide server-side:
+   - human-not-present: `ap2:open_mandate:{sha256(open_mandate_hash)[:32]}:{phase}[:{suffix}]`
+   - default / human-present: `ap2:tx:{sha256(transaction_id)[:32]}:{phase}[:{suffix}]`
+   New `mapping.consume_once_input()` returns the (scope, raw_value) pair. The `idempotency_key()` function signature changed from `(transaction_id: str, ...)` to `(mandate: AP2Mandate, ...)` to enable automatic scope selection. **Wire-shape change** — pre-PyPI so no migration. New test class `TestIdempotencyKeyOpenMandateScope` + new test `test_open_mandate_overuse_collapses_distinct_transactions_onto_one_key` cover the regression.
+
+2. **[P0-B] Post-PSP commit failures now raise instead of silently logging** — `RESERVATION_FINALIZED`, `RESERVATION_EXPIRED`, and `IDEMPOTENCY_MISMATCH` previously returned silently with a warning log; callers only saw `guard.committed == False`. After the PSP body has run, any of these is a reconciliation event the caller MUST handle. `RESERVATION_EXPIRED` in particular is dangerous: the PSP may have charged while Cycles reclaimed the budget on TTL. **Fix:** new `AP2GuardCommitUncertain` exception (carries `error_code` + `request_id` + `reservation_id`); raised from `_handle_commit` for all three terminal-status codes. Still no auto-release (a prior commit may already have settled). Existing tests that asserted silent behavior were flipped to expect the raise; new `RESERVATION_EXPIRED` test added.
+
+3. **README polish** — added "Independent project — not affiliated with Google" disclaimer; added "What this does NOT do" section (no signature verification, no mandate creation, etc.); softened "any AP2-compatible SDK" wording to "AP2-style PaymentMandate objects via a small adapter layer"; tightened headline value-prop with a bulleted "prevent these failure modes" list; updated lifecycle table for commit-uncertain raise; updated idempotency key table to show the dual-scope behavior.
+
+4. **Real AP2-shaped adapter test** — new `tests/test_ap2_shape_adapter.py` uses local dataclasses matching the upstream AP2 sample-type layout (`PaymentMandate`, `CheckoutMandate`, `Payee`, `PaymentAmount`) so `AP2Mandate.from_ap2()` is exercised against shape closer to real AP2 SDK objects, not just our own internal fakes. If upstream renames a field, this test fails first.
+
+**Test posture after fixes:**
+- 100 tests (up from 90), 98.35% coverage.
+
+**Public API additions:**
+- `AP2GuardCommitUncertain` exception class (exported)
+
+**Wire-shape change (acceptable because pre-PyPI):**
+- idempotency keys now include a scope namespace: `ap2:tx:...` or `ap2:open_mandate:...` (was `ap2:...`)
+
 ## 2026-05-13 — sixth-round review fix (P2 non-int amount types)
 
 **Author:** code-review response on PR #1 (round 6)
