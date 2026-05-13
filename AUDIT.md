@@ -18,9 +18,11 @@ Per `CLAUDE.md`: this file records material changes to the repo (server, admin, 
 - `AsyncGuardedPayment` class
 - `cycles_guard_payment_async(...)` factory
 
-**Test posture after addition:**
-- 128 tests (up from 110), 97.60% coverage.
-- 18 new tests in `tests/test_async_guard.py` mirror the sync test surface.
+**Test posture after addition (including the audit follow-up commit and the CancelledError fix):**
+- 147 tests (up from 110), 99.20% coverage.
+- 37 tests in `tests/test_async_guard.py` mirror the sync surface across clean commit, dry-run, denial, release on exception, all five commit-uncertain branches (terminal codes, 5xx with/without body, transport error, uncaught exception, asyncio cancellation), commit-failed branches incl. release-failure recording, and an AP2 sample-type end-to-end through the async path.
+
+**Cancellation policy on async commit:** an outer `asyncio.CancelledError` during the in-flight commit POST is treated as commit-uncertain. Since `asyncio.CancelledError` inherits from `BaseException`, the generic `except Exception` clause does not catch it; without an explicit handler, the cancellation would escape as raw `CancelledError` with no `reservation_id` or `error_code`, despite the post-PSP unknown-outcome contract. The async `_handle_commit` now explicitly converts it to `AP2GuardCommitUncertain(error_code="COMMIT_CANCELLED")` with the original on `__cause__`. No release is attempted (the commit may have reached and settled Cycles before the cancel landed). Sync code path is unaffected; cancellation only applies to async.
 
 **No protocol changes. No wire-shape changes.** Existing v0.1.x callers see the sync API entirely unchanged.
 

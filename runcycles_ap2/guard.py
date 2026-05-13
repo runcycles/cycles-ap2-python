@@ -7,6 +7,7 @@ receipt logic via module-level helpers — only their I/O paths differ.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from types import TracebackType
@@ -676,6 +677,27 @@ class AsyncGuardedPayment:
         )
         try:
             response = await self._client.commit_reservation(self._reservation_id, body)
+        except asyncio.CancelledError as exc:
+            # asyncio.CancelledError is a BaseException on Python 3.8+, so ``except
+            # Exception`` does NOT catch it. We MUST handle it explicitly here, before
+            # the generic Exception clause, because cancellation mid-commit has the
+            # same post-PSP unknown-outcome semantics as any other commit failure: the
+            # request may have reached Cycles and settled the budget before the cancel
+            # landed. Auto-releasing could undo a real settle. The caller's
+            # ``except AP2GuardCommitUncertain`` handler runs as a quick reconciliation
+            # signal; the original CancelledError stays on ``__cause__`` so anyone
+            # checking explicitly can detect it, and the task still terminates once
+            # the handler returns.
+            logger.warning(
+                "AP2 commit cancelled mid-flight (async): tx=%s. Outcome unknown.",
+                self._mandate.transaction_id,
+            )
+            raise AP2GuardCommitUncertain(
+                f"AP2 commit cancelled mid-flight for transaction {self._mandate.transaction_id}. "
+                "Commit may have reached Cycles before cancellation; no release was attempted.",
+                error_code="COMMIT_CANCELLED",
+                reservation_id=self._reservation_id,
+            ) from exc
         except Exception as exc:
             logger.exception("AP2 commit raised (async): tx=%s", self._mandate.transaction_id)
             raise AP2GuardCommitUncertain(

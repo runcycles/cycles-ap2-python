@@ -74,6 +74,12 @@ class AP2GuardCommitUncertain(AP2GuardError):
       - **Uncaught exception during commit** (``error_code="COMMIT_RAISED"``) — the
         client code raised before a response was processed; the chained ``__cause__``
         is the original exception. May or may not have reached the server.
+      - **Cancellation mid-commit** (``error_code="COMMIT_CANCELLED"``, async only) —
+        an outer ``asyncio.CancelledError`` landed while the commit POST was in
+        flight. Because ``asyncio.CancelledError`` is a ``BaseException``, it must
+        be handled separately from the ``COMMIT_RAISED`` path; semantics are
+        otherwise identical. The chained ``__cause__`` is the original
+        ``CancelledError``.
 
     The caller MUST handle this exception — silently returning would let
     unreconciled payment state propagate. Use ``error_code`` to distinguish the

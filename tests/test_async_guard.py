@@ -423,6 +423,30 @@ class TestAsyncCommitUncertain:
         assert isinstance(ei.value.__cause__, ConnectionError)
         async_mock_client.release_reservation.assert_not_awaited()
 
+    async def test_commit_cancellation_surfaces_as_uncertain(self, async_mock_client, mandate) -> None:
+        # P1 regression: asyncio.CancelledError is a BaseException, so ``except
+        # Exception`` (the COMMIT_RAISED branch) does NOT catch it. Without the
+        # explicit CancelledError handler, an outer timeout/cancel mid-flight would
+        # escape as raw CancelledError with no reservation_id or error_code, despite
+        # the post-PSP unknown-outcome contract saying it must raise
+        # AP2GuardCommitUncertain. Wrapping converts to the domain exception so the
+        # caller's reconciliation handler still runs; the original CancelledError
+        # rides on __cause__ for callers who want to detect it explicitly.
+        import asyncio
+
+        async_mock_client.create_reservation.return_value = allow_response("rsv_cancel")
+        async_mock_client.commit_reservation.side_effect = asyncio.CancelledError()
+
+        with pytest.raises(AP2GuardCommitUncertain) as ei:
+            async with cycles_guard_payment_async(async_mock_client, mandate=mandate, run_id="r", tenant="acme"):
+                pass
+
+        assert ei.value.error_code == "COMMIT_CANCELLED"
+        assert ei.value.reservation_id == "rsv_cancel"
+        assert isinstance(ei.value.__cause__, asyncio.CancelledError)
+        # CRITICAL: no release attempt — commit may have settled before cancel landed.
+        async_mock_client.release_reservation.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Commit-failed (4xx unrecognized)
