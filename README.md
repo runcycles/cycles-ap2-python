@@ -3,13 +3,12 @@
 [![CI](https://github.com/runcycles/cycles-ap2-python/actions/workflows/ci.yml/badge.svg)](https://github.com/runcycles/cycles-ap2-python/actions)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)](https://github.com/runcycles/cycles-ap2-python/actions)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/runcycles/cycles-ap2-python/badge)](https://scorecard.dev/viewer/?uri=github.com/runcycles/cycles-ap2-python)
 
 # Cycles AP2 Guard — Runtime authority for AP2 agent payments
 
-**Cycles AP2 Guard adds runtime authority to [AP2](https://github.com/google-agentic-commerce/AP2) payment flows.**
+**Cycles AP2 Guard adds runtime authority to [Google AP2](https://github.com/google-agentic-commerce/AP2) payment flows.**
 
-> *AP2 proves that a payment mandate is valid.*
+> *Google AP2 proves that a payment mandate is valid.*
 > *Cycles decides whether this agent, tenant, run, mandate, and merchant are still allowed to attempt the payment right now.*
 
 Use it to prevent:

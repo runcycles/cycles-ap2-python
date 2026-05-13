@@ -160,7 +160,14 @@ class AP2Mandate(BaseModel):
 
         checkout_hash: str | None = None
         if checkout_mandate is not None:
-            checkout_hash = getattr(checkout_mandate, "hash", None) or getattr(checkout_mandate, "checkout_hash", None)
+            # Two upstream naming variants point at the same field, so fall back only
+            # when the first is genuinely missing (``None``) — NOT when it's an empty
+            # string. Empty-string `hash` is bad data; let it propagate so the model's
+            # ``min_length=1`` rejects it instead of silently masking the corruption
+            # via the falsy-``or`` short-circuit.
+            checkout_hash = getattr(checkout_mandate, "hash", None)
+            if checkout_hash is None:
+                checkout_hash = getattr(checkout_mandate, "checkout_hash", None)
 
         return cls(
             transaction_id=transaction_id,

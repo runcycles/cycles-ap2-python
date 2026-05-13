@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `set_actual_micros()` raises `AP2MandateError` (a `ValueError` subclass) for both negative and over-int64 inputs, plus any non-int type (notably `bool` and `float`, which numerical comparisons would otherwise let slip through).
 - Direct callers of `mapping.build_commit_body(actual_micros=...)` get the same input validation via a shared private validator.
 - `AP2Mandate.checkout_hash` and `open_mandate_hash` require `min_length=1` when present — empty strings would otherwise silently fall back to the transaction-id lock scope.
-- 107 tests, ≥ 95% coverage, ruff + mypy strict.
+- Idempotency-key suffix filter is ASCII-only (`isascii() and isalnum()` — defends against Unicode-aware `isalnum()` letting non-ASCII chars reach the HTTP header).
+- `AP2Mandate.from_ap2()` preserves an empty upstream `checkout_hash` so the model's `min_length=1` constraint can reject it (was previously masked to `None` by a falsy-`or` short-circuit).
+- 110 tests, ≥ 95% coverage, ruff + mypy strict.
 
 ### Planned for v0.2
 - `AsyncGuardedPayment` (asyncio).

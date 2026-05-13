@@ -2,6 +2,24 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-05-13 — positioning-review round 4 (ASCII suffix + empty-hash preservation + docstrings)
+
+**Author:** strategic/positioning review round 4 (PR #2 still in-flight)
+**Scope:** correctness polish + docstring sync
+
+1. **[P2] ASCII-only filter in idempotency-key suffix** — `safe_suffix` used `c.isalnum()`, but Python's `str.isalnum` is Unicode-aware (e.g. `"É".isalnum() == True`). A non-ASCII exception class name (or any non-ASCII suffix input) would have reached the `Idempotency-Key` HTTP header — RFC 7230 requires ASCII tokens, so httpx would reject the request. **Fix:** tighten the predicate to `(c.isascii() and c.isalnum()) or c in ("_", "-", ".")`. Regression test asserts the key is `isascii()` even when given a French-style suffix `"Échec"`.
+
+2. **[P3] `AP2Mandate.from_ap2` preserved empty `checkout_hash`** — the `or` short-circuit at `getattr(..., "hash", None) or getattr(..., "checkout_hash", None)` masked upstream `hash=""` as `None`, bypassing the model's `min_length=1` rejection. **Fix:** explicit `None` check on the first alternative; fall back only when the first attr is genuinely absent. Two regression tests: empty `hash=""` now raises `ValidationError` at construction; alternate naming (`checkout_hash` attr with no `hash` attr) still falls through correctly.
+
+3. **[P3] Stale docstrings refreshed** —
+   - `mapping.build_commit_body.__doc__` now references the consume-once scope rather than `transaction_id` exclusively.
+   - `AP2GuardCommitFailed.__doc__` rewritten: it covers only 4xx-explicit-rejection now; the previous paragraph that claimed it excludes `RESERVATION_FINALIZED` / `RESERVATION_EXPIRED` / `IDEMPOTENCY_MISMATCH` as "benign replay" was misleading — those raise `AP2GuardCommitUncertain` (a different exception), not a quiet no-op. The new docstring points readers at `AP2GuardCommitUncertain` for all unknown-outcome conditions.
+
+**Test posture after fixes:**
+- 110 tests (up from 107), 99.19% coverage.
+
+No public API additions; only behavior tightening on existing paths.
+
 ## 2026-05-13 — positioning-review round 3 (P0 transport/5xx routing + P1 bare-exception wrap)
 
 **Author:** strategic/positioning review round 3 (PR #2 still in-flight)

@@ -95,12 +95,12 @@ class AP2GuardCommitUncertain(AP2GuardError):
 
 
 class AP2GuardCommitFailed(AP2GuardError):
-    """Cycles rejected the commit AFTER the body ran (PSP may already have charged).
+    """Cycles **explicitly rejected** the commit request itself AFTER the body ran.
 
-    The wrapper attempts to release the reservation to recover budget; whether that
-    release succeeded is reported via :attr:`released`. The caller MUST treat this as
-    a reconciliation event regardless: PSP state and Cycles' view of the budget can
-    be out of sync.
+    Used only for 4xx responses with an unrecognized error code (e.g. malformed
+    request, forbidden, etc.). The server saw the request and refused; releasing
+    the reservation is safe and is attempted before this exception is raised. The
+    PSP may still have moved money, so the caller MUST reconcile regardless.
 
     - ``released = True``: budget was returned, but PSP-side capture may still need
       reconciliation against your books.
@@ -108,9 +108,11 @@ class AP2GuardCommitFailed(AP2GuardError):
       (server-side rollback) AND PSP-side capture may need reconciliation. This is
       the worst case — escalate.
 
-    This exception is NOT raised for ``RESERVATION_FINALIZED`` / ``RESERVATION_EXPIRED``
-    / ``IDEMPOTENCY_MISMATCH`` — those indicate a prior attempt already finalized the
-    reservation and the current call is a benign replay.
+    This is NOT the right exception for unknown-outcome failures. Anything where the
+    commit POST might have reached and mutated Cycles before the failure — transport
+    errors, 5xx, terminal reservation statuses (``RESERVATION_FINALIZED`` /
+    ``RESERVATION_EXPIRED`` / ``IDEMPOTENCY_MISMATCH``), and uncaught exceptions —
+    is raised as :class:`AP2GuardCommitUncertain` with **no auto-release**.
     """
 
     def __init__(

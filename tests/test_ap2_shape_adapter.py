@@ -76,6 +76,42 @@ class TestAP2ShapeAdapter:
         # When open_mandate_hash is present, the consume-once lock keys on it.
         assert ":open_mandate:" in idempotency_key(mandate, "reserve")
 
+    def test_from_ap2_empty_checkout_hash_is_rejected_not_silently_dropped(self) -> None:
+        # P3 regression: previously, an upstream `CheckoutMandate(hash="")` would be
+        # short-circuited to None via the `or` in from_ap2(), masking the bad data
+        # and bypassing the model's min_length=1 check. Now the empty string is
+        # preserved and the AP2Mandate constructor raises.
+        from pydantic import ValidationError
+
+        pm = _PaymentMandate(
+            transaction_id="tx-empty-ch",
+            payment_amount=_PaymentAmount(value="1.00", currency="USD"),
+            payee=_Payee(website="shop.example"),
+        )
+        cm = _CheckoutMandate(hash="")  # empty — upstream data corruption
+
+        import pytest
+
+        with pytest.raises(ValidationError):
+            AP2Mandate.from_ap2(pm, cm)
+
+    def test_from_ap2_checkout_hash_alt_naming_still_falls_through(self) -> None:
+        # When the first attribute is genuinely missing (no `hash` attr at all), the
+        # alternate naming (`checkout_hash`) is used — that's the intended fallback.
+        @dataclass
+        class _CheckoutMandateAltName:
+            checkout_hash: str
+
+        pm = _PaymentMandate(
+            transaction_id="tx-alt",
+            payment_amount=_PaymentAmount(value="1.00", currency="USD"),
+            payee=_Payee(website="shop.example"),
+        )
+        cm = _CheckoutMandateAltName(checkout_hash="ch_via_alt_name")
+
+        mandate = AP2Mandate.from_ap2(pm, cm)
+        assert mandate.checkout_hash == "ch_via_alt_name"
+
     def test_from_ap2_payee_identifier_fallback(self) -> None:
         # Some AP2 sample shapes use `identifier` when no website is set.
         pm = _PaymentMandate(

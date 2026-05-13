@@ -80,6 +80,19 @@ class TestIdempotencyKey:
         assert "\n" not in key and "\t" not in key and "\r" not in key and "\x00" not in key
         assert all(c.isalnum() or c in (":", "_", "-", ".") for c in key)
 
+    def test_non_ascii_suffix_is_sanitized_to_ascii(self) -> None:
+        # P2 regression: Python's str.isalnum() is Unicode-aware, so "É".isalnum() is
+        # True. An earlier filter that used `c.isalnum() or c in (...)` alone would
+        # let non-ASCII chars reach the Idempotency-Key header — RFC 7230 requires
+        # ASCII tokens, so httpx would reject the request. The tightened predicate
+        # `c.isascii() and c.isalnum()` keeps the key strictly ASCII.
+        m = make_mandate()
+        key = idempotency_key(m, "release", "Échec")  # French "Failure"
+        assert key.isascii()
+        # The non-ASCII "É" must have been replaced (with "_"); "chec" survives.
+        assert "É" not in key
+        assert key.endswith(":release:_chec")
+
     def test_key_length_bounded(self) -> None:
         # Hash + phase + suffix always fits inside the protocol's 256-char cap, even
         # at the longest possible transaction_id (model max 256) and a max-length

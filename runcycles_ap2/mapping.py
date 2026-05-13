@@ -79,9 +79,13 @@ def idempotency_key(mandate: AP2Mandate, phase: str, suffix: str | None = None) 
     scope, raw = consume_once_input(mandate)
     base = f"{IDEMPOTENCY_PREFIX}:{scope}:{_hash_input(raw)}:{phase}"
     if suffix:
-        # Header-safe charset: alphanumeric, underscore, hyphen, dot. Anything else
-        # becomes ``_`` so the resulting key is always a valid HTTP header value.
-        safe_suffix = "".join(c if c.isalnum() or c in ("_", "-", ".") else "_" for c in suffix)
+        # Header-safe charset: ASCII alphanumeric, underscore, hyphen, dot. We use
+        # ``isascii() and isalnum()`` rather than ``isalnum()`` alone because Python's
+        # ``str.isalnum`` is Unicode-aware ("É".isalnum() is True), and HTTP header
+        # tokens per RFC 7230 must be ASCII. Non-ASCII chars (e.g. a localized
+        # exception class name like "Échec") would otherwise reach the wire and
+        # httpx would reject the request. Anything outside the safe set becomes "_".
+        safe_suffix = "".join(c if (c.isascii() and c.isalnum()) or c in ("_", "-", ".") else "_" for c in suffix)
         base = f"{base}:{safe_suffix[:64]}"
     return base
 
@@ -200,7 +204,11 @@ def build_commit_body(
     actual_micros: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Commit body with deterministic idempotency key derived from ``transaction_id``.
+    """Commit body with the deterministic idempotency key for this mandate.
+
+    The key is derived from the consume-once scope: ``open_mandate_hash`` when the
+    mandate carries one (HNP flows), otherwise ``transaction_id`` — see
+    :func:`idempotency_key` and :func:`consume_once_input`.
 
     ``actual_micros`` is validated when supplied (rejects ``bool``, ``float``, and
     out-of-range ints) so direct callers of this builder get the same protection as
