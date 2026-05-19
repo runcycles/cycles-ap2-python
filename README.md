@@ -303,7 +303,8 @@ CI runs all three checks on Python 3.10 and 3.12 for every push and pull request
 ## Background
 
 - [Preventing AP2 Open-Mandate Overuse with Runtime Idempotency](https://runcycles.io/blog/ap2-open-mandate-consume-once-runtime-idempotency) — engineering write-up of the keying decision (`open_mandate_hash` vs `transaction_id`), post-PSP commit uncertainty, and the AP2 §6 consume-once defense.
-- [AP2 GitHub Discussion #262](https://github.com/google-agentic-commerce/AP2/discussions/262) — context and a couple of spec-level questions (hash canonicalization, adapter shape) posted on the upstream AP2 repo.
+- [AP2 GitHub Discussion #262](https://github.com/google-agentic-commerce/AP2/discussions/262) — spec-level discussion on `open_mandate_hash` canonicalization and adapter shape with the upstream AP2 community.
+- [AP2 `open_mandate_hash` v0 conformance vectors](https://gist.github.com/chopmob-cloud/1dca25fd6107db4b7a30bed5dbf2ded8) — community-seeded 7-vector set covering JCS canonicalization edges (object-key order, array order, optional-field presence, currency minor-unit, Unicode NFC-vs-NFD) for `open_mandate_hash = SHA-256(JCS_RFC8785(unsigned mandate body))`. Hash input is the claims object, not the JWS envelope. Independently reproduced under `rfc8785@0.1.4`. Community-seeded, not AP2-spec-blessed — see discussion #262 for scope.
 
 ## Documentation
 
