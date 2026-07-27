@@ -2,6 +2,12 @@
 
 Per `CLAUDE.md`: this file records material changes to the repo (server, admin, client). For a client package, that means public API, on-the-wire request shape, and protocol-conformance posture.
 
+## 2026-07-27 — runcycles floor raised to 0.5.0
+
+**Scope:** dependency floor only; no wire-shape, public API, or exception-contract change
+
+`pyproject.toml` raises the `runcycles` floor from `>=0.4.1` to `>=0.5.0` (durable commit retries: on-disk journal with replay, `POST /v1/events` fallback for expired commits, 429/auth handling that never releases spent budget). The guard's direct `commit_reservation` calls do not engage the SDK's new retry engine, so the documented `AP2GuardCommitUncertain` / `AP2GuardCommitFailed` semantics are unchanged; engine adoption is a candidate follow-up that would shift transient commit failures from "uncertain, caller reconciles" to "journaled, will settle". Full suite against `runcycles==0.5.0`: 148 tests passed, 99.21% coverage (gate 95%).
+
 ## 2026-05-13 — v0.3.0 — wire-shape change: AP2 routing moves to Subject.dimensions
 
 **Author:** v0.3.0 release, prompted by a live integration smoke test against `cycles-server:0.1.25.18`
